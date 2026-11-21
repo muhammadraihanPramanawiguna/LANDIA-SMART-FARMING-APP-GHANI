@@ -1,5 +1,8 @@
+
 import 'dart:async';
+
 import 'package:flutter/material.dart';
+
 import '../models/sensor_reading.dart';
 import '../services/api_service.dart';
 import 'daily_recap_screen.dart';
@@ -12,8 +15,7 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  final ApiService _apiService = ApiService(useMockData: true);
-  final String _deviceId = 'landia-node-01';
+  final ApiService _apiService = ApiService();
 
   DhtReading? _dht;
   SoilReading? _soil;
@@ -21,27 +23,82 @@ class _DashboardScreenState extends State<DashboardScreen> {
   RainSensorReading? _rain;
   WaterFlowSession? _flow;
 
+  final Map<String, String> _sensorErrors = {};
+
   bool _isLoading = true;
+  bool _isFetching = false;
+
   String? _errorMessage;
   Timer? _pollingTimer;
+
+  static const Color primaryGreen = Color(0xFF1B5E20);
+  static const Color lightGreen = Color(0xFF2E7D32);
+  static const Color backgroundColor = Color(0xFFF3F6F4);
+
+  bool get _hasAnyData =>
+      _dht != null ||
+      _soil != null ||
+      _tank != null ||
+      _rain != null ||
+      _flow != null;
+
+  bool _isPercentageUnit(String unit) {
+    final normalized = unit.trim().toLowerCase();
+
+    return normalized == '%' ||
+        normalized == 'percent' ||
+        normalized == 'percentage' ||
+        normalized == 'persen';
+  }
 
   @override
   void initState() {
     super.initState();
+
     _fetchAllTelemetry();
-    // Poll semi-live data every 10 seconds
-    _pollingTimer = Timer.periodic(const Duration(seconds: 10), (_) {
-      _fetchAllTelemetry(silent: true);
-    });
+
+    // Polling setiap 10 detik.
+    _pollingTimer = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) => _fetchAllTelemetry(silent: true),
+    );
   }
 
   @override
   void dispose() {
     _pollingTimer?.cancel();
+    _apiService.dispose();
     super.dispose();
   }
 
-  Future<void> _fetchAllTelemetry({bool silent = false}) async {
+  // ==========================================================
+  // FETCH SENSOR DATA
+  // ==========================================================
+
+  Future<T?> _fetchSensor<T>(
+    String sensorName,
+    Future<T> Function() request,
+  ) async {
+    try {
+      final result = await request();
+
+      _sensorErrors.remove(sensorName);
+
+      return result;
+    } catch (e) {
+      _sensorErrors[sensorName] = e.toString();
+
+      return null;
+    }
+  }
+
+  Future<void> _fetchAllTelemetry({
+    bool silent = false,
+  }) async {
+    if (_isFetching || !mounted) return;
+
+    _isFetching = true;
+
     if (!silent) {
       setState(() {
         _isLoading = true;
@@ -50,40 +107,94 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     try {
-      final results = await Future.wait([
-        _apiService.fetchLatestDht(_deviceId),
-        _apiService.fetchLatestSoil(_deviceId),
-        _apiService.fetchLatestTankLevel(_deviceId),
-        _apiService.fetchLatestRain(_deviceId),
-        _apiService.fetchLatestWaterFlow(_deviceId),
+      final results = await Future.wait<Object?>([
+        _fetchSensor(
+          'DHT',
+          () => _apiService.fetchLatestDht(
+            ApiService.dhtSensorId,
+          ),
+        ),
+        _fetchSensor(
+          'Soil',
+          () => _apiService.fetchLatestSoil(
+            ApiService.soilSensorId,
+          ),
+        ),
+        _fetchSensor(
+          'Water Level',
+          () => _apiService.fetchLatestTankLevel(
+            ApiService.waterLevelSensorId,
+          ),
+        ),
+        _fetchSensor(
+          'Rain',
+          () => _apiService.fetchLatestRain(
+            ApiService.rainSensorId,
+          ),
+        ),
+        _fetchSensor(
+          'Flow',
+          () => _apiService.fetchLatestWaterFlow(
+            ApiService.flowSensorId,
+          ),
+        ),
       ]);
 
       if (!mounted) return;
+
+      final dht = results[0] as DhtReading?;
+      final soil = results[1] as SoilReading?;
+      final tank = results[2] as TankLevelReading?;
+      final rain = results[3] as RainSensorReading?;
+      final flow = results[4] as WaterFlowSession?;
+
+      final hasNewData = results.any(
+        (result) => result != null,
+      );
+
       setState(() {
-        _dht = results[0] as DhtReading;
-        _soil = results[1] as SoilReading;
-        _tank = results[2] as TankLevelReading;
-        _rain = results[3] as RainSensorReading;
-        _flow = results[4] as WaterFlowSession;
+        // Pertahankan data terakhir jika request sensor gagal.
+        if (dht != null) _dht = dht;
+        if (soil != null) _soil = soil;
+        if (tank != null) _tank = tank;
+        if (rain != null) _rain = rain;
+        if (flow != null) _flow = flow;
+
         _isLoading = false;
+
+        if (_sensorErrors.isNotEmpty) {
+          if (!_hasAnyData) {
+            _errorMessage =
+                'Belum berhasil mengambil data sensor. '
+                'Periksa koneksi jaringan dan backend.';
+          } else if (!hasNewData) {
+            _errorMessage =
+                'Pembaruan gagal. Data terakhir yang berhasil '
+                'diterima masih ditampilkan.';
+          } else {
+            _errorMessage =
+                'Sebagian sensor gagal diperbarui. '
+                'Data sensor lainnya tetap ditampilkan.';
+          }
+        } else {
+          _errorMessage = null;
+        }
       });
     } catch (e) {
       if (!mounted) return;
+
       setState(() {
-        _errorMessage = 'Gagal memuat data sensor: $e';
         _isLoading = false;
+        _errorMessage = 'Gagal mengambil data sensor: $e';
       });
+    } finally {
+      _isFetching = false;
     }
   }
 
-  String _formatRupiah(double amount) {
-    final intVal = amount.round();
-    final str = intVal.toString().replaceAllMapped(
-      RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
-      (Match m) => '${m[1]}.',
-    );
-    return 'Rp $str';
-  }
+  // ==========================================================
+  // HELPER
+  // ==========================================================
 
   Color _getSoilConditionColor(String condition) {
     switch (condition) {
@@ -98,86 +209,239 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  String _sensorError(String sensorName) {
+    return _sensorErrors[sensorName] ??
+        'Data sensor belum tersedia.';
+  }
+
+  Widget _buildUnavailableText({
+    String message = 'Data sensor belum tersedia.',
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Text(
+        message,
+        style: const TextStyle(
+          fontSize: 11,
+          color: Colors.black54,
+          fontStyle: FontStyle.italic,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCard({
+    required Widget child,
+    Color? borderColor,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: borderColor ?? Colors.grey.shade200,
+          width: 1.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: child,
+    );
+  }
+
+  Widget _buildSectionTitle(String title) {
+    return Text(
+      title,
+      style: const TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.bold,
+        color: Color(0xFF1E293B),
+      ),
+    );
+  }
+
+  // ==========================================================
+  // MAIN BUILD
+  // ==========================================================
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF3F6F4),
+      backgroundColor: backgroundColor,
       appBar: AppBar(
         title: const Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
               'Landia Farm',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20),
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 20,
+              ),
+            ),
+            Text(
+              'Smart Farming Monitoring',
+              style: TextStyle(
+                fontSize: 11,
+                color: Colors.white70,
+              ),
             ),
           ],
         ),
-        backgroundColor: const Color(0xFF1B5E20),
+        backgroundColor: primaryGreen,
         foregroundColor: Colors.white,
         elevation: 0,
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
+            icon: _isFetching
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.refresh),
             tooltip: 'Perbarui Data',
-            onPressed: () => _fetchAllTelemetry(),
+            onPressed: _isFetching
+                ? null
+                : () => _fetchAllTelemetry(),
           ),
         ],
       ),
-      body: _isLoading
+      body: _isLoading && !_hasAnyData
           ? const Center(
-              child: CircularProgressIndicator(color: Color(0xFF2E7D32)),
+              child: CircularProgressIndicator(
+                color: lightGreen,
+              ),
             )
-          : _errorMessage != null
-          ? _buildErrorView()
-          : RefreshIndicator(
-              onRefresh: () => _fetchAllTelemetry(),
-              color: const Color(0xFF2E7D32),
-              child: ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  _buildRecapBannerButton(context),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Pemantauan Sensor Langsung',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF1E293B),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  // 1. Sensor DHT (Suhu & Kelembapan Udara)
-                  _buildDhtCard(),
-                  const SizedBox(height: 12),
-                  // 2 & 3. Row for Soil & Rain Sensors
-                  Row(
+          : !_hasAnyData
+              ? _buildErrorView()
+              : RefreshIndicator(
+                  onRefresh: () => _fetchAllTelemetry(),
+                  color: lightGreen,
+                  child: ListView(
+                    physics:
+                        const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.all(16),
                     children: [
-                      Expanded(child: _buildSoilCard()),
-                      const SizedBox(width: 12),
-                      Expanded(child: _buildRainCard()),
+                      _buildRecapBannerButton(context),
+
+                      const SizedBox(height: 16),
+
+                      if (_errorMessage != null)
+                        _buildWarningBanner(),
+
+                      _buildSectionTitle(
+                        'Pemantauan Sensor Langsung',
+                      ),
+
+                      const SizedBox(height: 10),
+
+                      _buildDhtCard(),
+
+                      const SizedBox(height: 12),
+
+                      Row(
+                        crossAxisAlignment:
+                            CrossAxisAlignment.start,
+                        children: [
+                          Expanded(child: _buildSoilCard()),
+                          const SizedBox(width: 12),
+                          Expanded(child: _buildRainCard()),
+                        ],
+                      ),
+
+                      const SizedBox(height: 12),
+
+                      _buildTankCard(),
+
+                      const SizedBox(height: 18),
+
+                      _buildSectionTitle(
+                        'Data Aliran Air (Sensor Flow)',
+                      ),
+
+                      const SizedBox(height: 10),
+
+                      _buildFlowCard(),
+
+                      const SizedBox(height: 24),
+
+                      _buildLastUpdateInformation(),
                     ],
                   ),
-                  const SizedBox(height: 12),
-                  // 4. Sensor Jarak / Level Tangki
-                  _buildTankCard(),
-                  const SizedBox(height: 18),
-                  const Text(
-                    'Data Penyiraman Harian (Sensor Flow)',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF1E293B),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  // 5. Sensor Flow (Sekali Siram Sehari)
-                  _buildFlowCard(),
-                  const SizedBox(height: 24),
-                ],
-              ),
-            ),
+                ),
     );
   }
+
+  // ==========================================================
+  // WARNING BANNER
+  // ==========================================================
+
+  Widget _buildWarningBanner() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade50,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: Colors.orange.shade200,
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.warning_amber_rounded,
+            color: Colors.orange.shade800,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _errorMessage!,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.orange.shade900,
+                  ),
+                ),
+                if (_sensorErrors.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  ..._sensorErrors.keys.map(
+                    (name) => Padding(
+                      padding: const EdgeInsets.only(bottom: 3),
+                      child: Text(
+                        '• $name: gagal diperbarui',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.orange.shade900,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ==========================================================
+  // ERROR VIEW
+  // ==========================================================
 
   Widget _buildErrorView() {
     return Center(
@@ -186,20 +450,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.cloud_off, size: 56, color: Colors.redAccent),
+            const Icon(
+              Icons.cloud_off,
+              size: 56,
+              color: Colors.redAccent,
+            ),
             const SizedBox(height: 12),
             Text(
-              _errorMessage!,
+              _errorMessage ??
+                  'Data sensor belum tersedia.',
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 14, color: Colors.black87),
+              style: const TextStyle(
+                fontSize: 14,
+                color: Colors.black87,
+              ),
             ),
             const SizedBox(height: 16),
             ElevatedButton.icon(
-              onPressed: () => _fetchAllTelemetry(),
+              onPressed: _isFetching
+                  ? null
+                  : () => _fetchAllTelemetry(),
               icon: const Icon(Icons.refresh),
               label: const Text('Coba Lagi'),
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF2E7D32),
+                backgroundColor: lightGreen,
                 foregroundColor: Colors.white,
               ),
             ),
@@ -209,27 +483,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // ==========================================================
+  // DAILY RECAP BUTTON
+  // ==========================================================
+
   Widget _buildRecapBannerButton(BuildContext context) {
     return InkWell(
       onTap: () {
         Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => const DailyRecapScreen()),
+          MaterialPageRoute(
+            builder: (_) => const DailyRecapScreen(),
+          ),
         );
       },
       borderRadius: BorderRadius.circular(14),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 14,
+        ),
         decoration: BoxDecoration(
           gradient: const LinearGradient(
-            colors: [Color(0xFF2E7D32), Color(0xFF43A047)],
+            colors: [
+              Color(0xFF2E7D32),
+              Color(0xFF43A047),
+            ],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
           borderRadius: BorderRadius.circular(14),
           boxShadow: [
             BoxShadow(
-              color: const Color(0xFF2E7D32).withValues(alpha: 0.25),
+              color: lightGreen.withValues(alpha: 0.25),
               blurRadius: 8,
               offset: const Offset(0, 4),
             ),
@@ -239,7 +525,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
           children: [
             CircleAvatar(
               backgroundColor: Colors.white24,
-              child: Icon(Icons.table_chart_rounded, color: Colors.white),
+              child: Icon(
+                Icons.table_chart_rounded,
+                color: Colors.white,
+              ),
             ),
             SizedBox(width: 14),
             Expanded(
@@ -256,37 +545,41 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                   SizedBox(height: 2),
                   Text(
-                    'Lihat tabel rata-rata sensor & cetak PDF',
-                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                    'Lihat rekap sensor dan laporan PDF',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 12,
+                    ),
                   ),
                 ],
               ),
             ),
-            Icon(Icons.arrow_forward_ios, color: Colors.white, size: 16),
+            Icon(
+              Icons.arrow_forward_ios,
+              color: Colors.white,
+              size: 16,
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildDhtCard() {
-    final temp = _dht?.temperature.toStringAsFixed(1) ?? '--';
-    final hum = _dht?.humidity.toStringAsFixed(1) ?? '--';
+  // ==========================================================
+  // DHT CARD
+  // ==========================================================
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.orange.shade100, width: 1.5),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
+  Widget _buildDhtCard() {
+    final hasData = _dht != null;
+
+    final temperature =
+        hasData ? _dht!.temperature.toStringAsFixed(1) : '--';
+
+    final humidity =
+        hasData ? _dht!.humidity.toStringAsFixed(1) : '--';
+
+    return _buildCard(
+      borderColor: Colors.orange.shade100,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -298,103 +591,119 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   color: Colors.orange.shade50,
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: Icon(Icons.thermostat, color: Colors.orange.shade700),
-              ),
-              const SizedBox(width: 10),
-              const Text(
-                'Sensor DHT (Lingkungan Udara)',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
-                  color: Color(0xFF334155),
+                child: Icon(
+                  Icons.thermostat,
+                  color: Colors.orange.shade700,
                 ),
               ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  'Sensor DHT (Lingkungan Udara)',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                    color: Color(0xFF334155),
+                  ),
+                ),
+              ),
+              _buildConnectionDot(hasData),
             ],
           ),
           const SizedBox(height: 14),
           Row(
             children: [
               Expanded(
-                child: Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.orange.shade50.withValues(alpha: 0.6),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Suhu Udara',
-                        style: TextStyle(fontSize: 12, color: Colors.black54),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '$temp °C',
-                        style: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.orange.shade800,
-                        ),
-                      ),
-                    ],
-                  ),
+                child: _buildDhtMetric(
+                  label: 'Suhu Udara',
+                  value: '$temperature °C',
+                  background: Colors.orange.shade50,
+                  valueColor: Colors.orange.shade800,
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.cyan.shade50.withValues(alpha: 0.6),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Kelembapan Udara',
-                        style: TextStyle(fontSize: 12, color: Colors.black54),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '$hum %',
-                        style: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.cyan.shade800,
-                        ),
-                      ),
-                    ],
-                  ),
+                child: _buildDhtMetric(
+                  label: 'Kelembapan Udara',
+                  value: '$humidity %',
+                  background: Colors.cyan.shade50,
+                  valueColor: Colors.cyan.shade800,
                 ),
               ),
             ],
+          ),
+          if (!hasData)
+            _buildUnavailableText(
+              message: _sensorError('DHT'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDhtMetric({
+    required String label,
+    required String value,
+    required Color background,
+    required Color valueColor,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: background.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 12,
+              color: Colors.black54,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+              color: valueColor,
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildSoilCard() {
-    final moisture = _soil?.moistureValue.toStringAsFixed(1) ?? '--';
-    final condition = _soil?.condition ?? '-';
-    final badgeColor = _getSoilConditionColor(condition);
+  // ==========================================================
+  // SOIL CARD
+  // ==========================================================
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.brown.shade100, width: 1.5),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
+  Widget _buildSoilCard() {
+    final hasData = _soil != null;
+
+    final moisture = hasData
+        ? _soil!.moistureValue.toStringAsFixed(1)
+        : '--';
+
+    final unit = hasData ? _soil!.unit : '';
+
+    final isPercentage =
+        hasData && _isPercentageUnit(_soil!.unit);
+
+    final condition = !hasData
+        ? 'Tidak tersedia'
+        : isPercentage
+            ? _soil!.condition
+            : 'Belum dikalibrasi';
+
+    final badgeColor =
+        _getSoilConditionColor(condition);
+
+    return _buildCard(
+      borderColor: Colors.brown.shade100,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -404,7 +713,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
               color: Colors.brown.shade50,
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Icon(Icons.grass, color: Colors.brown.shade700),
+            child: Icon(
+              Icons.grass,
+              color: Colors.brown.shade700,
+            ),
           ),
           const SizedBox(height: 10),
           const Text(
@@ -417,7 +729,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
           const SizedBox(height: 6),
           Text(
-            '$moisture %',
+            hasData ? '$moisture $unit' : '--',
             style: TextStyle(
               fontSize: 22,
               fontWeight: FontWeight.bold,
@@ -426,50 +738,72 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
           const SizedBox(height: 8),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            padding: const EdgeInsets.symmetric(
+              horizontal: 10,
+              vertical: 4,
+            ),
             decoration: BoxDecoration(
               color: badgeColor.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
-              'Kondisi: $condition',
+              condition,
               style: TextStyle(
-                fontSize: 12,
+                fontSize: 11,
                 fontWeight: FontWeight.w600,
                 color: badgeColor,
               ),
             ),
           ),
+          if (!hasData)
+            _buildUnavailableText(
+              message: _sensorError('Soil'),
+            ),
         ],
       ),
     );
   }
 
-  Widget _buildRainCard() {
-    final isRaining = _rain?.isRaining ?? false;
-    final statusText = _rain?.statusText ?? 'Tidak Hujan';
-    final accentColor = isRaining
-        ? Colors.indigo.shade700
-        : Colors.amber.shade800;
-    final bgColor = isRaining ? Colors.indigo.shade50 : Colors.amber.shade50;
+  // ==========================================================
+  // RAIN CARD
+  // ==========================================================
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: isRaining ? Colors.indigo.shade100 : Colors.amber.shade200,
-          width: 1.5,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
+  Widget _buildRainCard() {
+    final hasData = _rain != null;
+    final hasRainStatus =
+        _rain?.hasRainStatus ?? false;
+    final isRaining = _rain?.isRaining ?? false;
+
+    final statusText = !hasData
+        ? 'Tidak tersedia'
+        : _rain!.statusText;
+
+    final accentColor = !hasData
+        ? Colors.grey.shade700
+        : hasRainStatus
+            ? (isRaining
+                ? Colors.indigo.shade700
+                : Colors.amber.shade800)
+            : Colors.blue.shade700;
+
+    final bgColor = !hasData
+        ? Colors.grey.shade100
+        : hasRainStatus
+            ? (isRaining
+                ? Colors.indigo.shade50
+                : Colors.amber.shade50)
+            : Colors.blue.shade50;
+
+    final icon = !hasData
+        ? Icons.cloud_off
+        : hasRainStatus
+            ? (isRaining
+                ? Icons.water_drop
+                : Icons.wb_sunny)
+            : Icons.grain;
+
+    return _buildCard(
+      borderColor: accentColor.withValues(alpha: 0.2),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -480,7 +814,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(
-              isRaining ? Icons.water_drop : Icons.wb_sunny,
+              icon,
               color: accentColor,
             ),
           ),
@@ -497,50 +831,74 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Text(
             statusText,
             style: TextStyle(
-              fontSize: 19,
+              fontSize: 16,
               fontWeight: FontWeight.bold,
               color: accentColor,
             ),
           ),
           const SizedBox(height: 8),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            padding: const EdgeInsets.symmetric(
+              horizontal: 10,
+              vertical: 4,
+            ),
             decoration: BoxDecoration(
               color: bgColor,
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
-              isRaining ? 'Terdeteksi Air' : 'Cuaca Cerah',
+              !hasData
+                  ? 'Data tidak tersedia'
+                  : hasRainStatus
+                      ? (isRaining
+                          ? 'Terdeteksi Hujan'
+                          : 'Tidak Hujan')
+                      : 'Status hujan belum tersedia',
               style: TextStyle(
-                fontSize: 12,
+                fontSize: 10,
                 fontWeight: FontWeight.w600,
                 color: accentColor,
               ),
             ),
           ),
+          if (!hasData)
+            _buildUnavailableText(
+              message: _sensorError('Rain'),
+            ),
         ],
       ),
     );
   }
 
-  Widget _buildTankCard() {
-    final pct = _tank?.percentage ?? 0.0;
-    final cm = _tank?.distanceCm.toStringAsFixed(1) ?? '--';
+  // ==========================================================
+  // WATER LEVEL CARD
+  // ==========================================================
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.blue.shade100, width: 1.5),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
+  Widget _buildTankCard() {
+    final hasData = _tank != null;
+
+    final value = hasData
+        ? _tank!.value.toStringAsFixed(1)
+        : '--';
+
+    final unit = hasData ? _tank!.unit : '';
+
+    final isPercentage =
+        hasData && _isPercentageUnit(_tank!.unit);
+
+    final hasDistance =
+        _tank?.hasDistanceCm ?? false;
+
+    final distance = hasDistance
+        ? '${_tank!.distanceCm.toStringAsFixed(1)} cm'
+        : 'Jarak belum tersedia';
+
+    final percentageValue = hasData && isPercentage
+        ? _tank!.value.clamp(0.0, 100.0)
+        : 0.0;
+
+    return _buildCard(
+      borderColor: Colors.blue.shade100,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -552,12 +910,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   color: Colors.blue.shade50,
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: Icon(Icons.straighten, color: Colors.blue.shade700),
+                child: Icon(
+                  Icons.water,
+                  color: Colors.blue.shade700,
+                ),
               ),
               const SizedBox(width: 10),
               const Expanded(
                 child: Text(
-                  'Sensor Jarak (Kapasitas Tangki)',
+                  'Level Air Tangki',
                   style: TextStyle(
                     fontWeight: FontWeight.bold,
                     fontSize: 14,
@@ -565,51 +926,84 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                 ),
               ),
-              Text(
-                '${pct.toStringAsFixed(0)}% ($cm cm)',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                  color: Colors.blue.shade800,
-                ),
-              ),
+              _buildConnectionDot(hasData),
             ],
           ),
           const SizedBox(height: 12),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: LinearProgressIndicator(
-              value: (pct / 100).clamp(0.0, 1.0),
-              minHeight: 10,
-              backgroundColor: Colors.blue.shade50,
-              valueColor: AlwaysStoppedAnimation<Color>(Colors.blue.shade600),
+
+          Text(
+            hasData ? '$value $unit' : '--',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 24,
+              color: Colors.blue.shade800,
             ),
           ),
+
+          if (isPercentage) ...[
+            const SizedBox(height: 12),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: LinearProgressIndicator(
+                value: percentageValue / 100,
+                minHeight: 10,
+                backgroundColor: Colors.blue.shade50,
+                valueColor:
+                    AlwaysStoppedAnimation<Color>(
+                  Colors.blue.shade600,
+                ),
+              ),
+            ),
+          ],
+
+          const SizedBox(height: 8),
+
+          Text(
+            hasDistance
+                ? distance
+                : isPercentage
+                    ? 'Persentase level tangki'
+                    : 'Nilai dan satuan sesuai data backend',
+            style: const TextStyle(
+              fontSize: 12,
+              color: Colors.black54,
+            ),
+          ),
+
+          if (!hasData)
+            _buildUnavailableText(
+              message: _sensorError('Water Level'),
+            ),
         ],
       ),
     );
   }
 
-  Widget _buildFlowCard() {
-    final rate = _flow?.flowRateLpm.toStringAsFixed(1) ?? '--';
-    final duration = _flow?.durationMinutes.toStringAsFixed(0) ?? '--';
-    final volume = _flow?.totalVolumeLiters.toStringAsFixed(1) ?? '--';
-    final cost = _flow != null ? _formatRupiah(_flow!.costIdr) : 'Rp --';
+  // ==========================================================
+  // FLOW CARD
+  // ==========================================================
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.teal.shade100, width: 1.5),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
+  Widget _buildFlowCard() {
+    final hasData = _flow != null;
+
+    final rate = hasData
+        ? '${_flow!.value.toStringAsFixed(1)} ${_flow!.unit}'
+        : '--';
+
+    final duration = hasData && _flow!.hasDuration
+        ? '${_flow!.durationMinutes.toStringAsFixed(1)} menit'
+        : 'Belum tersedia';
+
+    final volume = hasData && _flow!.hasTotalVolume
+        ? '${_flow!.totalVolumeLiters.toStringAsFixed(1)} liter'
+        : 'Belum tersedia';
+
+    final cost = hasData && _flow!.hasCost
+        ? _formatRupiah(_flow!.costIdr)
+        : 'Belum tersedia';
+
+    return _buildCard(
+      borderColor: Colors.teal.shade100,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -621,7 +1015,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   color: Colors.teal.shade50,
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: Icon(Icons.waves, color: Colors.teal.shade700),
+                child: Icon(
+                  Icons.waves,
+                  color: Colors.teal.shade700,
+                ),
               ),
               const SizedBox(width: 10),
               const Expanded(
@@ -637,56 +1034,65 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ),
                     ),
                     Text(
-                      'Tercatat 1x setiap sesi penyiraman harian',
-                      style: TextStyle(fontSize: 11, color: Colors.black54),
+                      'Monitoring aliran air',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.black54,
+                      ),
                     ),
                   ],
                 ),
               ),
+              _buildConnectionDot(hasData),
             ],
           ),
+
           const Divider(height: 24),
+
+          _buildFlowMetricItem(
+            label: 'Nilai Flow',
+            value: rate,
+            icon: Icons.speed,
+            color: Colors.teal.shade700,
+          ),
+
+          const SizedBox(height: 12),
+
           Row(
             children: [
               Expanded(
                 child: _buildFlowMetricItem(
-                  label: 'Debit Air',
-                  value: '$rate L/m³',
-                  icon: Icons.speed,
-                  color: Colors.teal.shade700,
-                ),
-              ),
-              Expanded(
-                child: _buildFlowMetricItem(
                   label: 'Durasi Aliran',
-                  value: '$duration Menit',
+                  value: duration,
                   icon: Icons.timer_outlined,
                   color: Colors.teal.shade700,
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
+              const SizedBox(width: 8),
               Expanded(
                 child: _buildFlowMetricItem(
-                  label: 'Volume Terpakai',
-                  value: '$volume Liter',
+                  label: 'Volume Air',
+                  value: volume,
                   icon: Icons.opacity,
                   color: Colors.teal.shade700,
                 ),
               ),
-              Expanded(
-                child: _buildFlowMetricItem(
-                  label: 'Biaya Sekali Siram',
-                  value: cost,
-                  icon: Icons.payments_outlined,
-                  color: Colors.green.shade800,
-                ),
-              ),
             ],
           ),
+
+          const SizedBox(height: 12),
+
+          _buildFlowMetricItem(
+            label: 'Biaya Penyiraman',
+            value: cost,
+            icon: Icons.payments_outlined,
+            color: Colors.green.shade800,
+          ),
+
+          if (!hasData)
+            _buildUnavailableText(
+              message: _sensorError('Flow'),
+            ),
         ],
       ),
     );
@@ -699,7 +1105,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     required Color color,
   }) {
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 4),
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(horizontal: 2),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: Colors.teal.shade50.withValues(alpha: 0.45),
@@ -710,22 +1117,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
         children: [
           Row(
             children: [
-              Icon(icon, size: 14, color: color),
-              const SizedBox(width: 4),
+              Icon(
+                icon,
+                size: 14,
+                color: color,
+              ),
+              const SizedBox(width: 5),
               Expanded(
                 child: Text(
                   label,
-                  style: const TextStyle(fontSize: 11, color: Colors.black54),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: Colors.black54,
+                  ),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 5),
           Text(
             value,
             style: TextStyle(
-              fontSize: 15,
+              fontSize: 14,
               fontWeight: FontWeight.bold,
               color: color,
             ),
@@ -733,5 +1147,85 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ],
       ),
     );
+  }
+
+  // ==========================================================
+  // CONNECTION INDICATOR
+  // ==========================================================
+
+  Widget _buildConnectionDot(bool isAvailable) {
+    return Tooltip(
+      message: isAvailable
+          ? 'Data sensor tersedia'
+          : 'Data sensor belum tersedia',
+      child: Container(
+        width: 9,
+        height: 9,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: isAvailable
+              ? Colors.green
+              : Colors.grey,
+        ),
+      ),
+    );
+  }
+
+  // ==========================================================
+  // LAST UPDATE INFORMATION
+  // ==========================================================
+
+  Widget _buildLastUpdateInformation() {
+    final timestamps = <DateTime>[
+      if (_dht != null) _dht!.timestamp,
+      if (_soil != null) _soil!.timestamp,
+      if (_tank != null) _tank!.timestamp,
+      if (_rain != null) _rain!.timestamp,
+      if (_flow != null) _flow!.timestamp,
+    ];
+
+    if (timestamps.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    timestamps.sort((a, b) => b.compareTo(a));
+
+    final latest = timestamps.first;
+
+    final date =
+        '${latest.day.toString().padLeft(2, '0')}/'
+        '${latest.month.toString().padLeft(2, '0')}/'
+        '${latest.year}';
+
+    final time =
+        '${latest.hour.toString().padLeft(2, '0')}:'
+        '${latest.minute.toString().padLeft(2, '0')}:'
+        '${latest.second.toString().padLeft(2, '0')}';
+
+    return Center(
+      child: Text(
+        'Data terbaru diterima: $date $time',
+        style: const TextStyle(
+          fontSize: 11,
+          color: Colors.black54,
+        ),
+        textAlign: TextAlign.center,
+      ),
+    );
+  }
+
+  // ==========================================================
+  // RUPIAH FORMATTER
+  // ==========================================================
+
+  String _formatRupiah(double amount) {
+    final intVal = amount.round();
+
+    final formatted = intVal.toString().replaceAllMapped(
+      RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
+      (Match match) => '${match[1]}.',
+    );
+
+    return 'Rp $formatted';
   }
 }

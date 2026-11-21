@@ -1,16 +1,115 @@
+
+double _readRequiredDouble(
+  Map<String, dynamic> json,
+  String key,
+) {
+  final value = json[key];
+
+  if (value is num) {
+    return value.toDouble();
+  }
+
+  if (value is String) {
+    final parsed = double.tryParse(value);
+    if (parsed != null) return parsed;
+  }
+
+  throw FormatException(
+    'Field "$key" tidak ditemukan atau bukan angka.',
+  );
+}
+
+double? _readOptionalDouble(dynamic value) {
+  if (value is num) return value.toDouble();
+
+  if (value is String) {
+    return double.tryParse(value);
+  }
+
+  return null;
+}
+
+bool? _readBool(dynamic value) {
+  if (value is bool) return value;
+
+  if (value is String) {
+    switch (value.trim().toLowerCase()) {
+      case 'true':
+      case '1':
+      case 'yes':
+      case 'hujan':
+        return true;
+
+      case 'false':
+      case '0':
+      case 'no':
+      case 'tidak hujan':
+        return false;
+    }
+  }
+
+  return null;
+}
+
+DateTime _readTimestamp(Map<String, dynamic> json) {
+  final raw = json['recordedAt'] ??
+      json['createdAt'] ??
+      json['timestamp'];
+
+  if (raw == null) {
+    throw const FormatException(
+      'Timestamp tidak ditemukan pada respons backend.',
+    );
+  }
+
+  try {
+    return DateTime.parse(raw.toString()).toLocal();
+  } on FormatException {
+    throw FormatException(
+      'Format timestamp tidak valid: $raw',
+    );
+  }
+}
+
+String _readRequiredString(
+  Map<String, dynamic> json,
+  String key,
+) {
+  final value = json[key];
+
+  if (value == null || value.toString().trim().isEmpty) {
+    throw FormatException(
+      'Field "$key" tidak ditemukan pada respons backend.',
+    );
+  }
+
+  return value.toString();
+}
+
+// ============================================================
+// MODEL UMUM SENSOR
+// ============================================================
+
 class SensorReading {
   final double value;
   final DateTime timestamp;
 
-  SensorReading({required this.value, required this.timestamp});
+  SensorReading({
+    required this.value,
+    required this.timestamp,
+  });
 
   factory SensorReading.fromJson(Map<String, dynamic> json) {
     return SensorReading(
-      value: (json['value'] as num?)?.toDouble() ?? 0.0,
-      timestamp: DateTime.parse(json['timestamp']),
+      value: _readRequiredDouble(json, 'value'),
+      timestamp: _readTimestamp(json),
     );
   }
 }
+
+// ============================================================
+// MODEL DHT - SUHU DAN KELEMBAPAN UDARA
+// ============================================================
 
 class DhtReading {
   final double temperature;
@@ -25,113 +124,228 @@ class DhtReading {
 
   factory DhtReading.fromJson(Map<String, dynamic> json) {
     return DhtReading(
-      temperature: (json['temperature'] as num?)?.toDouble() ?? 0.0,
-      humidity: (json['humidity'] as num?)?.toDouble() ?? 0.0,
-      timestamp: DateTime.parse(json['timestamp']),
+      temperature: _readRequiredDouble(json, 'temperature'),
+      humidity: _readRequiredDouble(json, 'humidity'),
+      timestamp: _readTimestamp(json),
     );
   }
 }
 
-/// Model for Soil Moisture Sensor (with condition label)
+// ============================================================
+// MODEL SOIL MOISTURE - KELEMBAPAN TANAH
+// ============================================================
+
 class SoilReading {
   final double moistureValue;
+  final String unit;
   final DateTime timestamp;
 
-  SoilReading({required this.moistureValue, required this.timestamp});
+  SoilReading({
+    required this.moistureValue,
+    required this.unit,
+    required this.timestamp,
+  });
 
-  /// Returns condition in Indonesian based on moisture thresholds
+  /// Klasifikasi sementara dari aplikasi.
+  ///
+  /// Ambang 30 dan 70 masih perlu divalidasi
+  /// dengan kalibrasi sensor dan firmware Landia Farm.
   String get condition {
-    if (moistureValue < 30.0) return 'Kering';
-    if (moistureValue < 70.0) return 'Lembap';
+    if (moistureValue < 30.0) {
+      return 'Kering';
+    }
+
+    if (moistureValue < 70.0) {
+      return 'Lembap';
+    }
+
     return 'Basah';
   }
 
   factory SoilReading.fromJson(Map<String, dynamic> json) {
     return SoilReading(
-      moistureValue:
-          (json['value'] ?? json['moistureValue'] as num?)?.toDouble() ?? 0.0,
-      timestamp: DateTime.parse(json['timestamp']),
+      moistureValue: _readRequiredDouble(json, 'value'),
+      unit: _readRequiredString(json, 'unit'),
+      timestamp: _readTimestamp(json),
     );
   }
 }
 
-/// Model for Ultrasonic / Tank Level Sensor (Percentage + cm)
+// ============================================================
+// MODEL WATER LEVEL - LEVEL AIR TANGKI
+// ============================================================
+
 class TankLevelReading {
-  final double percentage;
+  /// Nilai asli yang dikirim backend.
+  final double value;
+
+  /// Satuan asli yang dikirim backend.
+  final String unit;
+
+  /// Jarak opsional. Belum disediakan entity backend saat ini.
   final double distanceCm;
+
+  final bool hasDistanceCm;
   final DateTime timestamp;
 
   TankLevelReading({
-    required this.percentage,
-    required this.distanceCm,
+    required this.value,
+    required this.unit,
+    this.distanceCm = 0.0,
+    this.hasDistanceCm = false,
     required this.timestamp,
   });
 
+  /// Kompatibilitas sementara dengan dashboard lama.
+  /// Makna nilai harus mengikuti unit, bukan diasumsikan persen.
+  double get percentage => value;
+
   factory TankLevelReading.fromJson(Map<String, dynamic> json) {
+    final distance = _readOptionalDouble(json['distanceCm']);
+
     return TankLevelReading(
-      percentage: (json['percentage'] as num?)?.toDouble() ?? 0.0,
-      distanceCm: (json['distanceCm'] as num?)?.toDouble() ?? 0.0,
-      timestamp: DateTime.parse(json['timestamp']),
+      value: _readRequiredDouble(json, 'value'),
+      unit: _readRequiredString(json, 'unit'),
+      distanceCm: distance ?? 0.0,
+      hasDistanceCm: distance != null,
+      timestamp: _readTimestamp(json),
     );
   }
 }
 
-/// Model for Rain Sensor (Boolean status)
+// ============================================================
+// MODEL RAIN SENSOR - SENSOR HUJAN
+// ============================================================
+
 class RainSensorReading {
+  final double value;
+  final String unit;
+
+  /// Backend saat ini belum mengirim status hujan.
   final bool isRaining;
+  final bool hasRainStatus;
+
   final DateTime timestamp;
 
-  RainSensorReading({required this.isRaining, required this.timestamp});
+  RainSensorReading({
+    required this.value,
+    required this.unit,
+    this.isRaining = false,
+    this.hasRainStatus = false,
+    required this.timestamp,
+  });
 
-  String get statusText => isRaining ? 'Hujan' : 'Tidak Hujan';
+  String get statusText {
+    if (hasRainStatus) {
+      return isRaining ? 'Hujan' : 'Tidak Hujan';
+    }
 
-  factory RainSensorReading.fromJson(Map<String, dynamic> json) {
+    return 'Nilai sensor: ${value.toStringAsFixed(1)} $unit';
+  }
+
+  factory RainSensorReading.fromJson(
+    Map<String, dynamic> json,
+  ) {
+    final rawStatus = json['isRaining'] ?? json['status'];
+    final parsedStatus = _readBool(rawStatus);
+
     return RainSensorReading(
-      isRaining: json['isRaining'] ?? json['status'] ?? false,
-      timestamp: DateTime.parse(json['timestamp']),
+      value: _readRequiredDouble(json, 'value'),
+      unit: _readRequiredString(json, 'unit'),
+      isRaining: parsedStatus == true,
+      hasRainStatus: parsedStatus != null,
+      timestamp: _readTimestamp(json),
     );
   }
 }
 
-/// Model for Water Flow Sensor (Once per day session data + cost)
+// ============================================================
+// MODEL FLOW SENSOR - DEBIT ALIRAN AIR
+// ============================================================
+
 class WaterFlowSession {
   final String id;
-  final double flowRateLpm; // L/m³ or L/min
-  final double durationMinutes; // Berapa lama air mengalir
-  final double totalVolumeLiters; // Total volume air terpakai
-  final double costIdr; // Biaya air sekali siram
+
+  /// Nilai asli dari backend.
+  final double value;
+
+  /// Satuan asli dari backend.
+  final String unit;
+
+  /// Belum disediakan entity FlowReading.
+  final double durationMinutes;
+  final double totalVolumeLiters;
+  final double costIdr;
+
+  final bool hasDuration;
+  final bool hasTotalVolume;
+  final bool hasCost;
+
   final DateTime timestamp;
 
   WaterFlowSession({
     required this.id,
-    required this.flowRateLpm,
-    required this.durationMinutes,
-    required this.totalVolumeLiters,
-    required this.costIdr,
+    required this.value,
+    required this.unit,
+    this.durationMinutes = 0.0,
+    this.totalVolumeLiters = 0.0,
+    this.costIdr = 0.0,
+    this.hasDuration = false,
+    this.hasTotalVolume = false,
+    this.hasCost = false,
     required this.timestamp,
   });
 
-  factory WaterFlowSession.fromJson(Map<String, dynamic> json) {
+  /// Kompatibilitas sementara dengan dashboard lama.
+  double get flowRateLpm => value;
+
+  factory WaterFlowSession.fromJson(
+    Map<String, dynamic> json,
+  ) {
+    final duration = _readOptionalDouble(
+      json['durationMinutes'],
+    );
+
+    final volume = _readOptionalDouble(
+      json['totalVolumeLiters'],
+    );
+
+    final cost = _readOptionalDouble(
+      json['costIdr'],
+    );
+
     return WaterFlowSession(
-      id: json['id']?.toString() ?? '',
-      flowRateLpm: (json['flowRateLpm'] as num?)?.toDouble() ?? 0.0,
-      durationMinutes: (json['durationMinutes'] as num?)?.toDouble() ?? 0.0,
-      totalVolumeLiters: (json['totalVolumeLiters'] as num?)?.toDouble() ?? 0.0,
-      costIdr: (json['costIdr'] as num?)?.toDouble() ?? 0.0,
-      timestamp: DateTime.parse(json['timestamp']),
+      id: (json['id'] ?? json['sensorId'] ?? '').toString(),
+      value: _readRequiredDouble(json, 'value'),
+      unit: _readRequiredString(json, 'unit'),
+      durationMinutes: duration ?? 0.0,
+      totalVolumeLiters: volume ?? 0.0,
+      costIdr: cost ?? 0.0,
+      hasDuration: duration != null,
+      hasTotalVolume: volume != null,
+      hasCost: cost != null,
+      timestamp: _readTimestamp(json),
     );
   }
 }
 
-/// Model for Daily Recap Table (Rekapan Harian)
+// ============================================================
+// MODEL DAILY RECAP - REKAPITULASI HARIAN
+// ============================================================
+
+/// Model disiapkan untuk endpoint agregasi harian.
+/// Endpoint agregasi tersebut belum tersedia di backend.
+
 class DailyRecapRecord {
-  final String date; // e.g. "2026-10-24"
-  final double avgTemperature; // Rata-rata suhu DHT
-  final double avgHumidity; // Rata-rata kelembapan DHT
-  final double avgSoilMoisture; // Rata-rata kelembapan tanah
-  final double avgTankLevel; // Rata-rata level tangki (%)
-  final String dominantRainStatus; // "Hujan" / "Tidak Hujan"
-  final WaterFlowSession? flowSession; // Data flow sekali sehari
+  final String date;
+
+  final double avgTemperature;
+  final double avgHumidity;
+  final double avgSoilMoisture;
+  final double avgTankLevel;
+
+  final String dominantRainStatus;
+  final WaterFlowSession? flowSession;
 
   DailyRecapRecord({
     required this.date,
@@ -143,16 +357,34 @@ class DailyRecapRecord {
     this.flowSession,
   });
 
-  factory DailyRecapRecord.fromJson(Map<String, dynamic> json) {
+  factory DailyRecapRecord.fromJson(
+    Map<String, dynamic> json,
+  ) {
+    final rawFlowSession = json['flowSession'];
+
     return DailyRecapRecord(
-      date: json['date'] ?? '',
-      avgTemperature: (json['avgTemperature'] as num?)?.toDouble() ?? 0.0,
-      avgHumidity: (json['avgHumidity'] as num?)?.toDouble() ?? 0.0,
-      avgSoilMoisture: (json['avgSoilMoisture'] as num?)?.toDouble() ?? 0.0,
-      avgTankLevel: (json['avgTankLevel'] as num?)?.toDouble() ?? 0.0,
-      dominantRainStatus: json['dominantRainStatus'] ?? 'Tidak Hujan',
-      flowSession: json['flowSession'] != null
-          ? WaterFlowSession.fromJson(json['flowSession'])
+      date: (json['date'] ?? '').toString(),
+      avgTemperature: _readRequiredDouble(
+        json,
+        'avgTemperature',
+      ),
+      avgHumidity: _readRequiredDouble(
+        json,
+        'avgHumidity',
+      ),
+      avgSoilMoisture: _readRequiredDouble(
+        json,
+        'avgSoilMoisture',
+      ),
+      avgTankLevel: _readRequiredDouble(
+        json,
+        'avgTankLevel',
+      ),
+      dominantRainStatus: (
+        json['dominantRainStatus'] ?? 'Tidak diketahui'
+      ).toString(),
+      flowSession: rawFlowSession is Map<String, dynamic>
+          ? WaterFlowSession.fromJson(rawFlowSession)
           : null,
     );
   }

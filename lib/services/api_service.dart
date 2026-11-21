@@ -1,180 +1,222 @@
+
 import 'dart:convert';
+
 import 'package:http/http.dart' as http;
+
 import '../models/sensor_reading.dart';
-import '../models/history_models.dart'; // keeping your existing Rain/Fertilizer/Irrigation history imports if needed
 
 class ApiService {
-  final String baseUrl;
-  final bool useMockData;
+  ApiService({
+  String? host,
+  int? port,
+  this.scheme = 'http',
+  http.Client? client,
+})  : host = host ??
+          const String.fromEnvironment(
+            'LANDIA_API_HOST',
+            defaultValue: '192.168.0.190',
+          ),
+      port = port ??
+          const int.fromEnvironment(
+            'LANDIA_API_PORT',
+            defaultValue: 8086,
+          ),
+      _client = client ?? http.Client();
 
-  ApiService({this.baseUrl = 'http://localhost:8080', this.useMockData = true});
+  /// IP atau hostname server backend.
+  /// Development: 192.168.0.190
+  /// Production: hostname atau IP VPS.
+  final String host;
 
-  // --- TELEMETRY ENDPOINTS ---
+  /// Semua request REST melalui API Gateway.
+  final int port;
 
-  Future<DhtReading> fetchLatestDht(String deviceId) async {
-    if (useMockData) {
-      await Future.delayed(const Duration(milliseconds: 300));
-      return DhtReading(
-        temperature: 28.5,
-        humidity: 74.0,
-        timestamp: DateTime.now(),
-      );
-    }
+  /// http untuk development, https untuk production.
+  final String scheme;
 
-    final response = await http.get(
-      Uri.parse('$baseUrl/api/v1/telemetry/dht/latest?deviceId=$deviceId'),
+  final http.Client _client;
+
+  // ==========================================
+  // SENSOR ID
+  // ==========================================
+
+  static const String dhtSensorId = 'landia-dht-01';
+  static const String soilSensorId = 'landia-soil-01';
+  static const String waterLevelSensorId =
+      'landia-water-level-01';
+  static const String rainSensorId = 'landia-rain-01';
+  static const String flowSensorId = 'landia-flow-01';
+
+  // ==========================================
+  // BASE URI - API GATEWAY
+  // ==========================================
+
+  Uri _uri(
+    String path, [
+    Map<String, String>? query,
+  ]) {
+    return Uri(
+      scheme: scheme,
+      host: host,
+      port: port,
+      path: path,
+      queryParameters: query,
     );
-    if (response.statusCode == 200) {
-      return DhtReading.fromJson(jsonDecode(response.body));
-    } else {
+  }
+
+  // ==========================================
+  // HTTP GET + JSON HANDLER
+  // ==========================================
+
+  Future<Map<String, dynamic>> _getJson(Uri uri) async {
+    try {
+      final response = await _client
+          .get(
+            uri,
+            headers: const {
+              'Accept': 'application/json',
+            },
+          )
+          .timeout(const Duration(seconds: 8));
+
+      if (response.statusCode < 200 ||
+          response.statusCode >= 300) {
+        throw Exception(
+          'HTTP ${response.statusCode}: ${response.body}',
+        );
+      }
+
+      if (response.body.isEmpty) {
+        throw const FormatException(
+          'Respons API kosong',
+        );
+      }
+
+      final dynamic decoded = jsonDecode(response.body);
+
+      if (decoded is! Map<String, dynamic>) {
+        throw const FormatException(
+          'Respons API bukan objek JSON',
+        );
+      }
+
+      return decoded;
+    } on http.ClientException catch (e) {
       throw Exception(
-        'Failed to load DHT data from server (${response.statusCode})',
+        'Gagal terhubung ke API Gateway: ${e.message}',
       );
+    } on FormatException {
+      rethrow;
     }
   }
 
-  Future<SoilReading> fetchLatestSoil(String deviceId) async {
-    if (useMockData) {
-      await Future.delayed(const Duration(milliseconds: 300));
-      return SoilReading(
-        moistureValue: 45.2, // will automatically evaluate to 'Lembap'
-        timestamp: DateTime.now(),
-      );
-    }
+  // ==========================================
+  // DHT SERVICE
+  // Gateway: /api/dht/**
+  // Backend: GET /api/dht/readings/{sensorId}/latest
+  // ==========================================
 
-    final response = await http.get(
-      Uri.parse('$baseUrl/api/v1/telemetry/soil/latest?deviceId=$deviceId'),
+  Future<DhtReading> fetchLatestDht([
+    String sensorId = dhtSensorId,
+  ]) async {
+    final json = await _getJson(
+      _uri('/api/dht/readings/$sensorId/latest'),
     );
-    if (response.statusCode == 200) {
-      return SoilReading.fromJson(jsonDecode(response.body));
-    } else {
-      throw Exception(
-        'Failed to load soil sensor data (${response.statusCode})',
-      );
-    }
+
+    return DhtReading.fromJson(json);
   }
 
-  Future<TankLevelReading> fetchLatestTankLevel(String deviceId) async {
-    if (useMockData) {
-      await Future.delayed(const Duration(milliseconds: 300));
-      return TankLevelReading(
-        percentage: 75.0,
-        distanceCm: 15.0,
-        timestamp: DateTime.now(),
-      );
-    }
+  // ==========================================
+  // SOIL SERVICE
+  // Gateway: /api/soil/**
+  // Backend: GET /api/soil/readings/latest?sensorId=...
+  // ==========================================
 
-    final response = await http.get(
-      Uri.parse('$baseUrl/api/v1/telemetry/tank/latest?deviceId=$deviceId'),
+  Future<SoilReading> fetchLatestSoil([
+    String sensorId = soilSensorId,
+  ]) async {
+    final json = await _getJson(
+      _uri(
+        '/api/soil/readings/latest',
+        {
+          'sensorId': sensorId,
+        },
+      ),
     );
-    if (response.statusCode == 200) {
-      return TankLevelReading.fromJson(jsonDecode(response.body));
-    } else {
-      throw Exception(
-        'Failed to load tank level data (${response.statusCode})',
-      );
-    }
+
+    return SoilReading.fromJson(json);
   }
 
-  Future<RainSensorReading> fetchLatestRain(String deviceId) async {
-    if (useMockData) {
-      await Future.delayed(const Duration(milliseconds: 300));
-      return RainSensorReading(
-        isRaining: false, // "Tidak Hujan"
-        timestamp: DateTime.now(),
-      );
-    }
+  // ==========================================
+  // WATER LEVEL SERVICE
+  // Gateway: /api/water-level/**
+  // Backend: GET /api/water-level/readings/{sensorId}/latest
+  // ==========================================
 
-    final response = await http.get(
-      Uri.parse('$baseUrl/api/v1/telemetry/rain/latest?deviceId=$deviceId'),
+  Future<TankLevelReading> fetchLatestTankLevel([
+    String sensorId = waterLevelSensorId,
+  ]) async {
+    final json = await _getJson(
+      _uri(
+        '/api/water-level/readings/$sensorId/latest',
+      ),
     );
-    if (response.statusCode == 200) {
-      return RainSensorReading.fromJson(jsonDecode(response.body));
-    } else {
-      throw Exception(
-        'Failed to load rain sensor data (${response.statusCode})',
-      );
-    }
+
+    return TankLevelReading.fromJson(json);
   }
 
-  Future<WaterFlowSession> fetchLatestWaterFlow(String deviceId) async {
-    if (useMockData) {
-      await Future.delayed(const Duration(milliseconds: 300));
-      return WaterFlowSession(
-        id: 'flow-001',
-        flowRateLpm: 12.5,
-        durationMinutes: 15.0,
-        totalVolumeLiters: 187.5,
-        costIdr: 1500.0,
-        timestamp: DateTime.now(),
-      );
-    }
+  // ==========================================
+  // RAIN SERVICE
+  // Gateway: /api/rain/**
+  // Backend: GET /api/rain/readings/{sensorId}/latest
+  // ==========================================
 
-    final response = await http.get(
-      Uri.parse('$baseUrl/api/v1/telemetry/flow/latest?deviceId=$deviceId'),
+  Future<RainSensorReading> fetchLatestRain([
+    String sensorId = rainSensorId,
+  ]) async {
+    final json = await _getJson(
+      _uri(
+        '/api/rain/readings/$sensorId/latest',
+      ),
     );
-    if (response.statusCode == 200) {
-      return WaterFlowSession.fromJson(jsonDecode(response.body));
-    } else {
-      throw Exception(
-        'Failed to load water flow data (${response.statusCode})',
-      );
-    }
+
+    return RainSensorReading.fromJson(json);
   }
 
-  // --- DAILY RECAP ENDPOINT (Rekapan Harian) ---
+  // ==========================================
+  // FLOW SERVICE
+  // Gateway: /api/flow/**
+  // Backend: GET /api/flow/readings/{sensorId}/latest
+  // ==========================================
+
+  Future<WaterFlowSession> fetchLatestWaterFlow([
+    String sensorId = flowSensorId,
+  ]) async {
+    final json = await _getJson(
+      _uri(
+        '/api/flow/readings/$sensorId/latest',
+      ),
+    );
+
+    return WaterFlowSession.fromJson(json);
+  }
+
+  // ==========================================
+  // DAILY RECAP
+  // Belum tersedia di backend versi terbaru.
+  // ==========================================
 
   Future<List<DailyRecapRecord>> fetchDailyRecaps() async {
-    if (useMockData) {
-      await Future.delayed(const Duration(milliseconds: 400));
-      final now = DateTime.now();
-      return [
-        DailyRecapRecord(
-          date: now.toIso8601String().split('T')[0],
-          avgTemperature: 28.2,
-          avgHumidity: 75.0,
-          avgSoilMoisture: 48.5,
-          avgTankLevel: 80.0,
-          dominantRainStatus: 'Tidak Hujan',
-          flowSession: WaterFlowSession(
-            id: 'flow-today',
-            flowRateLpm: 12.0,
-            durationMinutes: 15.0,
-            totalVolumeLiters: 180.0,
-            costIdr: 1450.0,
-            timestamp: now,
-          ),
-        ),
-        DailyRecapRecord(
-          date: now
-              .subtract(const Duration(days: 1))
-              .toIso8601String()
-              .split('T')[0],
-          avgTemperature: 29.1,
-          avgHumidity: 70.4,
-          avgSoilMoisture: 35.0,
-          avgTankLevel: 65.0,
-          dominantRainStatus: 'Hujan',
-          flowSession: WaterFlowSession(
-            id: 'flow-yesterday',
-            flowRateLpm: 11.5,
-            durationMinutes: 20.0,
-            totalVolumeLiters: 230.0,
-            costIdr: 1900.0,
-            timestamp: now.subtract(const Duration(days: 1)),
-          ),
-        ),
-      ];
-    }
+    throw UnsupportedError(
+      'Daily Recap belum tersedia di backend Landia Farm.',
+    );
+  }
 
-    final response = await http.get(Uri.parse('$baseUrl/api/v1/recap/daily'));
-    if (response.statusCode == 200) {
-      List<dynamic> jsonList = jsonDecode(response.body);
-      return jsonList.map((item) => DailyRecapRecord.fromJson(item)).toList();
-    } else {
-      throw Exception(
-        'Failed to load daily recap records (${response.statusCode})',
-      );
-    }
+  // ==========================================
+  // DISPOSE
+  // ==========================================
+
+  void dispose() {
+    _client.close();
   }
 }
