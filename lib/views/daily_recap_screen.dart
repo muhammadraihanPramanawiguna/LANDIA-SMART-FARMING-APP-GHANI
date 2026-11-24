@@ -4,7 +4,10 @@ import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 
 class DailyRecapScreen extends StatefulWidget {
-  const DailyRecapScreen({super.key});
+  const DailyRecapScreen({super.key, required this.jwt, required this.deviceId});
+
+  final String jwt;
+  final String deviceId;
 
   @override
   State<DailyRecapScreen> createState() =>
@@ -12,7 +15,7 @@ class DailyRecapScreen extends StatefulWidget {
 }
 
 class _DailyRecapScreenState extends State<DailyRecapScreen> {
-  final ApiService _apiService = ApiService();
+  late final ApiService _apiService = ApiService(jwt: widget.jwt, deviceId: widget.deviceId);
 
   bool _isLoading = true;
   bool _isSupported = false;

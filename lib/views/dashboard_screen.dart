@@ -60,9 +60,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     _fetchAllTelemetry();
 
-    // ESP32 mengirim telemetry setiap 5 menit; polling disamakan agar tidak membebani server.
+    // ESP32 mengirim telemetry setiap 15 detik; polling mengikuti interval tersebut.
     _pollingTimer = Timer.periodic(
-      const Duration(minutes: 1),
+      const Duration(seconds: 15),
       (_) => _fetchAllTelemetry(silent: true),
     );
   }
@@ -169,7 +169,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           if (!_hasAnyData) {
             _errorMessage =
                 'Belum berhasil mengambil data sensor. '
-                'Periksa koneksi jaringan dan backend.';
+                'Periksa koneksi internet dan server ThingsBoard.';
           } else if (!hasNewData) {
             _errorMessage =
                 'Pembaruan gagal. Data terakhir yang berhasil '
@@ -496,7 +496,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) => const DailyRecapScreen(),
+            builder: (_) => DailyRecapScreen(
+              jwt: widget.jwt,
+              deviceId: widget.deviceId,
+            ),
           ),
         );
       },
@@ -610,7 +613,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                 ),
               ),
-              _buildConnectionDot(hasData),
+              _buildConnectionDot(hasData, hasData ? _dht!.timestamp : null),
             ],
           ),
           const SizedBox(height: 14),
@@ -771,107 +774,93 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // RAIN CARD
   // ==========================================================
 
-  Widget _buildRainCard() {
-    final hasData = _rain != null;
-    final hasRainStatus =
-        _rain?.hasRainStatus ?? false;
-    final isRaining = _rain?.isRaining ?? false;
 
-    final statusText = !hasData
-        ? 'Tidak tersedia'
-        : _rain!.statusText;
+Widget _buildRainCard() {
+  final hasData = _rain != null;
+  final hasRainStatus = _rain?.hasRainStatus ?? false;
+  final isRaining = _rain?.isRaining ?? false;
 
-    final accentColor = !hasData
-        ? Colors.grey.shade700
-        : hasRainStatus
-            ? (isRaining
-                ? Colors.indigo.shade700
-                : Colors.amber.shade800)
-            : Colors.blue.shade700;
+  final statusText = !hasData
+      ? 'Tidak tersedia'
+      : _rain!.statusText;
 
-    final bgColor = !hasData
-        ? Colors.grey.shade100
-        : hasRainStatus
-            ? (isRaining
-                ? Colors.indigo.shade50
-                : Colors.amber.shade50)
-            : Colors.blue.shade50;
+  final accentColor = !hasData
+      ? Colors.grey.shade700
+      : hasRainStatus
+          ? (isRaining
+              ? Colors.indigo.shade700
+              : Colors.amber.shade800)
+          : Colors.blue.shade700;
 
-    final icon = !hasData
-        ? Icons.cloud_off
-        : hasRainStatus
-            ? (isRaining
-                ? Icons.water_drop
-                : Icons.wb_sunny)
-            : Icons.grain;
+  final bgColor = !hasData
+      ? Colors.grey.shade100
+      : hasRainStatus
+          ? (isRaining
+              ? Colors.indigo.shade50
+              : Colors.amber.shade50)
+          : Colors.blue.shade50;
 
-    return _buildCard(
-      borderColor: accentColor.withValues(alpha: 0.2),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: bgColor,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(
-              icon,
-              color: accentColor,
-            ),
-          ),
-          const SizedBox(height: 10),
-          const Text(
-            'Sensor Hujan',
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 13,
-              color: Color(0xFF334155),
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            statusText,
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-              color: accentColor,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 10,
-              vertical: 4,
-            ),
-            decoration: BoxDecoration(
-              color: bgColor,
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Text(
-              !hasData
-                  ? 'Data tidak tersedia'
-                  : hasRainStatus
-                      ? (isRaining
-                          ? 'Terdeteksi Hujan'
-                          : 'Tidak Hujan')
-                      : 'Status hujan belum tersedia',
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w600,
+  return _buildCard(
+    borderColor: accentColor.withValues(alpha: 0.2),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: bgColor,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(
+                isRaining ? Icons.water_drop : Icons.wb_sunny,
                 color: accentColor,
               ),
             ),
-          ),
-          if (!hasData)
-            _buildUnavailableText(
-              message: _sensorError('Rain'),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Text(
+                'Sensor Hujan',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                  color: Color(0xFF334155),
+                ),
+              ),
             ),
-        ],
-      ),
-    );
-  }
+            _buildConnectionDot(
+              hasData,
+              hasData ? _rain!.timestamp : null,
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Text(
+          statusText,
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+            color: accentColor,
+          ),
+        ),
+        const SizedBox(height: 8),
+        _buildFlowMetricItem(
+          label: 'Persentase Hujan (rain_percent)',
+          value: hasData
+              ? '${_rain!.rainPercent.toStringAsFixed(1)} %'
+              : '--',
+          icon: Icons.water_drop_outlined,
+          color: Colors.blue.shade700,
+        ),
+        if (!hasData)
+          _buildUnavailableText(
+            message: _sensorError('Rain'),
+          ),
+      ],
+    ),
+  );
+}
 
   // ==========================================================
   // WATER LEVEL CARD
@@ -929,7 +918,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                 ),
               ),
-              _buildConnectionDot(hasData),
+              _buildConnectionDot(hasData, hasData ? _tank!.timestamp : null),
             ],
           ),
           const SizedBox(height: 12),
@@ -986,120 +975,141 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // FLOW CARD
   // ==========================================================
 
-  Widget _buildFlowCard() {
-    final hasData = _flow != null;
 
-    final rate = hasData
-        ? '${_flow!.value.toStringAsFixed(1)} ${_flow!.unit}'
-        : '--';
+Widget _buildFlowCard() {
+  final hasData = _flow != null;
 
-    final duration = hasData && _flow!.hasDuration
-        ? '${_flow!.durationMinutes.toStringAsFixed(1)} menit'
-        : 'Belum tersedia';
+  final rate = hasData
+      ? '${_flow!.value.toStringAsFixed(2)} L/min'
+      : '--';
 
-    final volume = hasData && _flow!.hasTotalVolume
-        ? '${_flow!.totalVolumeLiters.toStringAsFixed(1)} liter'
-        : 'Belum tersedia';
+  final volume = hasData && _flow!.hasTotalVolume
+      ? '${_flow!.totalVolumeLiters.toStringAsFixed(3)} liter'
+      : 'Belum tersedia';
 
-    final cost = hasData && _flow!.hasCost
-        ? _formatRupiah(_flow!.costIdr)
-        : 'Belum tersedia';
+  final consumption = hasData && _flow!.hasConsumptionM3
+      ? '${_flow!.consumptionM3.toStringAsFixed(6)} m³'
+      : 'Belum tersedia';
 
-    return _buildCard(
-      borderColor: Colors.teal.shade100,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.teal.shade50,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(
-                  Icons.waves,
-                  color: Colors.teal.shade700,
-                ),
+  final tariff = hasData && _flow!.hasTariff
+      ? 'Rp ${_flow!.tariffPerM3.toStringAsFixed(0)} / m³'
+      : 'Belum tersedia';
+
+  final cost = hasData && _flow!.hasCost
+      ? _formatRupiah(_flow!.costIdr)
+      : 'Belum tersedia';
+
+  return _buildCard(
+    borderColor: Colors.teal.shade100,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.teal.shade50,
+                borderRadius: BorderRadius.circular(10),
               ),
-              const SizedBox(width: 10),
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Sensor Flow (Aliran Air)',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
-                        color: Color(0xFF334155),
-                      ),
-                    ),
-                    Text(
-                      'Monitoring aliran air',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: Colors.black54,
-                      ),
-                    ),
-                  ],
-                ),
+              child: Icon(
+                Icons.waves,
+                color: Colors.teal.shade700,
               ),
-              _buildConnectionDot(hasData),
-            ],
-          ),
-
-          const Divider(height: 24),
-
-          _buildFlowMetricItem(
-            label: 'Nilai Flow',
-            value: rate,
-            icon: Icons.speed,
-            color: Colors.teal.shade700,
-          ),
-
-          const SizedBox(height: 12),
-
-          Row(
-            children: [
-              Expanded(
-                child: _buildFlowMetricItem(
-                  label: 'Durasi Aliran',
-                  value: duration,
-                  icon: Icons.timer_outlined,
-                  color: Colors.teal.shade700,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _buildFlowMetricItem(
-                  label: 'Volume Air',
-                  value: volume,
-                  icon: Icons.opacity,
-                  color: Colors.teal.shade700,
-                ),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 12),
-
-          _buildFlowMetricItem(
-            label: 'Biaya Penyiraman',
-            value: cost,
-            icon: Icons.payments_outlined,
-            color: Colors.green.shade800,
-          ),
-
-          if (!hasData)
-            _buildUnavailableText(
-              message: _sensorError('Flow'),
             ),
-        ],
-      ),
-    );
-  }
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Sensor Flow (Aliran Air)',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                      color: Color(0xFF334155),
+                    ),
+                  ),
+                  Text(
+                    'Monitoring volume air yang melewati flow sensor',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.black54,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            _buildConnectionDot(
+              hasData,
+              hasData ? _flow!.timestamp : null,
+            ),
+          ],
+        ),
+
+        const Divider(height: 24),
+
+        _buildFlowMetricItem(
+          label: 'Debit Air (flow_rate)',
+          value: rate,
+          icon: Icons.speed,
+          color: Colors.teal.shade700,
+        ),
+
+        const SizedBox(height: 12),
+
+        _buildFlowMetricItem(
+          label: 'Total Volume Air (total_water_liters)',
+          value: volume,
+          icon: Icons.opacity,
+          color: Colors.teal.shade700,
+        ),
+
+        const SizedBox(height: 12),
+
+        _buildFlowMetricItem(
+          label: 'Konsumsi Air (water_consumption_m3)',
+          value: consumption,
+          icon: Icons.water,
+          color: Colors.blue.shade700,
+        ),
+
+        const SizedBox(height: 12),
+
+        _buildFlowMetricItem(
+          label: 'Tarif Air (water_tariff_rupiah_per_m3)',
+          value: tariff,
+          icon: Icons.price_change_outlined,
+          color: Colors.blueGrey.shade700,
+        ),
+
+        const SizedBox(height: 12),
+
+        _buildFlowMetricItem(
+          label: 'Estimasi Biaya (water_cost_rupiah)',
+          value: cost,
+          icon: Icons.payments_outlined,
+          color: Colors.green.shade800,
+        ),
+
+        const SizedBox(height: 8),
+        const Text(
+          'Catatan: biaya dihitung dari tarif konfigurasi ThingsBoard/ESP32. '
+          'Pastikan nilai tarif sudah sesuai kondisi sumber air Landia Farm.',
+          style: TextStyle(
+            fontSize: 10,
+            color: Colors.black54,
+          ),
+        ),
+
+        if (!hasData)
+          _buildUnavailableText(
+            message: _sensorError('Flow'),
+          ),
+      ],
+    ),
+  );
+}
 
   Widget _buildFlowMetricItem({
     required String label,
@@ -1156,22 +1166,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // CONNECTION INDICATOR
   // ==========================================================
 
-  Widget _buildConnectionDot(bool isAvailable) {
+  Widget _buildConnectionDot(bool hasData, DateTime? timestamp) {
+    final age = timestamp == null ? null : DateTime.now().difference(timestamp);
+    final fresh = age != null && age >= Duration.zero && age <= const Duration(seconds: 60);
+    final color = !hasData ? Colors.grey : (fresh ? Colors.green : Colors.orange);
+    final message = !hasData
+        ? 'Belum ada data sensor'
+        : fresh
+            ? 'Telemetry diperbarui dalam 60 detik terakhir'
+            : 'Data terakhir sudah ${_formatAge(age!)}. Periksa ESP32 atau koneksi internet.';
     return Tooltip(
-      message: isAvailable
-          ? 'Data sensor tersedia'
-          : 'Data sensor belum tersedia',
+      message: message,
       child: Container(
         width: 9,
         height: 9,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: isAvailable
-              ? Colors.green
-              : Colors.grey,
-        ),
+        decoration: BoxDecoration(shape: BoxShape.circle, color: color),
       ),
     );
+  }
+
+  String _formatAge(Duration age) {
+    if (age.inDays > 0) return '${age.inDays} hari';
+    if (age.inHours > 0) return '${age.inHours} jam';
+    if (age.inMinutes > 0) return '${age.inMinutes} menit';
+    return '${age.inSeconds} detik';
   }
 
   // ==========================================================
@@ -1194,6 +1212,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     timestamps.sort((a, b) => b.compareTo(a));
 
     final latest = timestamps.first;
+    final age = DateTime.now().difference(latest);
+    final isStale = age > const Duration(seconds: 60);
 
     final date =
         '${latest.day.toString().padLeft(2, '0')}/'
@@ -1206,13 +1226,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
         '${latest.second.toString().padLeft(2, '0')}';
 
     return Center(
-      child: Text(
-        'Data terbaru diterima: $date $time',
-        style: const TextStyle(
-          fontSize: 11,
-          color: Colors.black54,
-        ),
-        textAlign: TextAlign.center,
+      child: Column(
+        children: [
+          Text(
+            'Data terbaru diterima: $date $time',
+            style: const TextStyle(fontSize: 11, color: Colors.black54),
+            textAlign: TextAlign.center,
+          ),
+          if (isStale) ...[
+            const SizedBox(height: 4),
+            Text(
+              'DATA LAMA — pembaruan terakhir ${_formatAge(age)} lalu. ESP32 mungkin offline.',
+              style: const TextStyle(fontSize: 11, color: Colors.deepOrange, fontWeight: FontWeight.w600),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ],
       ),
     );
   }
