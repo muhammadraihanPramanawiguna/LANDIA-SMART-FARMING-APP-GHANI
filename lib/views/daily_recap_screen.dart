@@ -155,8 +155,8 @@ class _DailyRecapScreenState extends State<DailyRecapScreen> {
             ),
             const SizedBox(height: 12),
             const Text(
-              'Backend Landia Farm saat ini sudah menyediakan '
-              'data pembacaan sensor, tetapi belum memiliki '
+              'ThingsBoard saat ini sudah menyediakan '
+              'data telemetry sensor, tetapi aplikasi belum memiliki proses agregasi untuk membuat '
               'endpoint untuk mengolah data menjadi laporan harian.',
               textAlign: TextAlign.center,
               style: TextStyle(

@@ -1,222 +1,146 @@
-
 import 'dart:convert';
-
 import 'package:http/http.dart' as http;
-
 import '../models/sensor_reading.dart';
 
+class ThingsBoardSession {
+  final String jwt;
+  final String deviceId;
+  final String deviceName;
+  const ThingsBoardSession({required this.jwt, required this.deviceId, required this.deviceName});
+}
+
 class ApiService {
-  ApiService({
-  String? host,
-  int? port,
-  this.scheme = 'http',
-  http.Client? client,
-})  : host = host ??
-          const String.fromEnvironment(
-            'LANDIA_API_HOST',
-            defaultValue: '192.168.0.190',
-          ),
-      port = port ??
-          const int.fromEnvironment(
-            'LANDIA_API_PORT',
-            defaultValue: 8086,
-          ),
-      _client = client ?? http.Client();
+  ApiService({this.jwt = '', this.deviceId = '', http.Client? client})
+      : _client = client ?? http.Client();
 
-  /// IP atau hostname server backend.
-  /// Development: 192.168.0.190
-  /// Production: hostname atau IP VPS.
-  final String host;
-
-  /// Semua request REST melalui API Gateway.
-  final int port;
-
-  /// http untuk development, https untuk production.
-  final String scheme;
-
+  static const String baseUrl = 'http://194.233.73.154:8080';
+  final String jwt;
+  final String deviceId;
   final http.Client _client;
 
-  // ==========================================
-  // SENSOR ID
-  // ==========================================
+  static Uri _url(String path, [Map<String, String>? query]) =>
+      Uri.parse('$baseUrl$path').replace(queryParameters: query);
 
-  static const String dhtSensorId = 'landia-dht-01';
-  static const String soilSensorId = 'landia-soil-01';
-  static const String waterLevelSensorId =
-      'landia-water-level-01';
-  static const String rainSensorId = 'landia-rain-01';
-  static const String flowSensorId = 'landia-flow-01';
-
-  // ==========================================
-  // BASE URI - API GATEWAY
-  // ==========================================
-
-  Uri _uri(
-    String path, [
-    Map<String, String>? query,
-  ]) {
-    return Uri(
-      scheme: scheme,
-      host: host,
-      port: port,
-      path: path,
-      queryParameters: query,
-    );
+  static Future<Map<String, dynamic>> _requestJson(
+    http.Client client, String method, Uri uri,
+    {String? body, String? bearer, Map<String, String>? headers}
+  ) async {
+    final requestHeaders = <String, String>{'Accept': 'application/json', ...?headers};
+    if (body != null) requestHeaders['Content-Type'] = 'application/json';
+    if (bearer != null) requestHeaders['X-Authorization'] = 'Bearer $bearer';
+    late http.Response response;
+    if (method == 'POST') {
+      response = await client.post(uri, headers: requestHeaders, body: body).timeout(const Duration(seconds: 12));
+    } else {
+      response = await client.get(uri, headers: requestHeaders).timeout(const Duration(seconds: 12));
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('ThingsBoard HTTP ${response.statusCode}: ${response.body}');
+    }
+    if (response.body.isEmpty) return <String, dynamic>{};
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) throw const FormatException('Respons ThingsBoard bukan JSON object.');
+    return decoded;
   }
 
-  // ==========================================
-  // HTTP GET + JSON HANDLER
-  // ==========================================
-
-  Future<Map<String, dynamic>> _getJson(Uri uri) async {
+  static Future<ThingsBoardSession> loginAndFindDevice({
+    required String username,
+    required String password,
+    String expectedDeviceName = 'Sensor C1',
+  }) async {
+    final client = http.Client();
     try {
-      final response = await _client
-          .get(
-            uri,
-            headers: const {
-              'Accept': 'application/json',
-            },
-          )
-          .timeout(const Duration(seconds: 8));
+      final login = await _requestJson(client, 'POST', _url('/api/auth/login'),
+        body: jsonEncode({'username': username, 'password': password}));
+      final jwt = login['token']?.toString();
+      if (jwt == null || jwt.isEmpty) throw const FormatException('JWT tidak ditemukan pada respons login.');
 
-      if (response.statusCode < 200 ||
-          response.statusCode >= 300) {
-        throw Exception(
-          'HTTP ${response.statusCode}: ${response.body}',
-        );
+      final user = await _requestJson(client, 'GET', _url('/api/auth/user'), bearer: jwt);
+      final customer = user['customer'];
+      final customerId = customer is Map ? customer['id'] : user['customerId'];
+      final customerUuid = customerId is Map ? customerId['id']?.toString() : customerId?.toString();
+      if (customerUuid == null || customerUuid.isEmpty || customerUuid == 'null') {
+        throw Exception('Akun berhasil login, tetapi customerId tidak ditemukan. Pastikan akun memiliki akses Customer ke device.');
       }
 
-      if (response.body.isEmpty) {
-        throw const FormatException(
-          'Respons API kosong',
-        );
+      final devices = await _requestJson(client, 'GET',
+        _url('/api/customer/$customerUuid/devices', {'pageSize': '100', 'page': '0'}), bearer: jwt);
+      final data = devices['data'];
+      if (data is! List) throw const FormatException('Daftar device ThingsBoard tidak valid.');
+      for (final item in data) {
+        if (item is! Map) continue;
+        if (item['name']?.toString() == expectedDeviceName) {
+          final id = item['id'];
+          final uuid = id is Map ? id['id']?.toString() : null;
+          if (uuid != null && uuid.isNotEmpty) {
+            return ThingsBoardSession(jwt: jwt, deviceId: uuid, deviceName: expectedDeviceName);
+          }
+        }
       }
-
-      final dynamic decoded = jsonDecode(response.body);
-
-      if (decoded is! Map<String, dynamic>) {
-        throw const FormatException(
-          'Respons API bukan objek JSON',
-        );
-      }
-
-      return decoded;
-    } on http.ClientException catch (e) {
-      throw Exception(
-        'Gagal terhubung ke API Gateway: ${e.message}',
-      );
-    } on FormatException {
-      rethrow;
+      throw Exception('Device "$expectedDeviceName" tidak ditemukan pada daftar device milik akun Customer.');
+    } finally {
+      client.close();
     }
   }
 
-  // ==========================================
-  // DHT SERVICE
-  // Gateway: /api/dht/**
-  // Backend: GET /api/dht/readings/{sensorId}/latest
-  // ==========================================
-
-  Future<DhtReading> fetchLatestDht([
-    String sensorId = dhtSensorId,
-  ]) async {
-    final json = await _getJson(
-      _uri('/api/dht/readings/$sensorId/latest'),
-    );
-
-    return DhtReading.fromJson(json);
+  Future<Map<String, dynamic>> _latest(List<String> keys) async {
+    final json = await _requestJson(_client, 'GET',
+      _url('/api/plugins/telemetry/DEVICE/$deviceId/values/timeseries', {
+        'keys': keys.join(','), 'limit': '1'
+      }), bearer: jwt);
+    return json;
   }
 
-  // ==========================================
-  // SOIL SERVICE
-  // Gateway: /api/soil/**
-  // Backend: GET /api/soil/readings/latest?sensorId=...
-  // ==========================================
-
-  Future<SoilReading> fetchLatestSoil([
-    String sensorId = soilSensorId,
-  ]) async {
-    final json = await _getJson(
-      _uri(
-        '/api/soil/readings/latest',
-        {
-          'sensorId': sensorId,
-        },
-      ),
-    );
-
-    return SoilReading.fromJson(json);
+  (double, DateTime)? _point(Map<String, dynamic> json, String key) {
+    final values = json[key];
+    if (values is! List || values.isEmpty || values.first is! Map) return null;
+    final point = values.first as Map;
+    final value = double.tryParse(point['value'].toString());
+    final ts = int.tryParse(point['ts'].toString());
+    if (value == null || ts == null) return null;
+    return (value, DateTime.fromMillisecondsSinceEpoch(ts).toLocal());
   }
 
-  // ==========================================
-  // WATER LEVEL SERVICE
-  // Gateway: /api/water-level/**
-  // Backend: GET /api/water-level/readings/{sensorId}/latest
-  // ==========================================
-
-  Future<TankLevelReading> fetchLatestTankLevel([
-    String sensorId = waterLevelSensorId,
-  ]) async {
-    final json = await _getJson(
-      _uri(
-        '/api/water-level/readings/$sensorId/latest',
-      ),
-    );
-
-    return TankLevelReading.fromJson(json);
+  Future<DhtReading> fetchLatestDht([String ignored = '']) async {
+    final json = await _latest(['temperature', 'humidity']);
+    final t = _point(json, 'temperature'); final h = _point(json, 'humidity');
+    if (t == null || h == null) throw const FormatException('Telemetry temperature/humidity belum tersedia.');
+    return DhtReading(temperature: t.$1, humidity: h.$1, timestamp: t.$2.isAfter(h.$2) ? t.$2 : h.$2);
   }
 
-  // ==========================================
-  // RAIN SERVICE
-  // Gateway: /api/rain/**
-  // Backend: GET /api/rain/readings/{sensorId}/latest
-  // ==========================================
-
-  Future<RainSensorReading> fetchLatestRain([
-    String sensorId = rainSensorId,
-  ]) async {
-    final json = await _getJson(
-      _uri(
-        '/api/rain/readings/$sensorId/latest',
-      ),
-    );
-
-    return RainSensorReading.fromJson(json);
+  Future<SoilReading> fetchLatestSoil([String ignored = '']) async {
+    final json = await _latest(['soil_moisture']); final p = _point(json, 'soil_moisture');
+    if (p == null) throw const FormatException('Telemetry soil_moisture belum tersedia.');
+    return SoilReading(moistureValue: p.$1, unit: '%', timestamp: p.$2);
   }
 
-  // ==========================================
-  // FLOW SERVICE
-  // Gateway: /api/flow/**
-  // Backend: GET /api/flow/readings/{sensorId}/latest
-  // ==========================================
-
-  Future<WaterFlowSession> fetchLatestWaterFlow([
-    String sensorId = flowSensorId,
-  ]) async {
-    final json = await _getJson(
-      _uri(
-        '/api/flow/readings/$sensorId/latest',
-      ),
-    );
-
-    return WaterFlowSession.fromJson(json);
+  Future<TankLevelReading> fetchLatestTankLevel([String ignored = '']) async {
+    final json = await _latest(['water_level_distance_cm', 'water_level_percent']);
+    final percent = _point(json, 'water_level_percent'); final distance = _point(json, 'water_level_distance_cm');
+    if (percent == null && distance == null) throw const FormatException('Telemetry level air belum tersedia.');
+    return TankLevelReading(value: percent?.$1 ?? distance!.$1, unit: percent != null ? '%' : 'cm',
+      distanceCm: distance?.$1 ?? 0, hasDistanceCm: distance != null, timestamp: percent?.$2 ?? distance!.$2);
   }
 
-  // ==========================================
-  // DAILY RECAP
-  // Belum tersedia di backend versi terbaru.
-  // ==========================================
-
-  Future<List<DailyRecapRecord>> fetchDailyRecaps() async {
-    throw UnsupportedError(
-      'Daily Recap belum tersedia di backend Landia Farm.',
-    );
+  Future<RainSensorReading> fetchLatestRain([String ignored = '']) async {
+    final json = await _latest(['rain_percent', 'is_raining']);
+    final p = _point(json, 'rain_percent'); final r = _point(json, 'is_raining');
+    if (p == null && r == null) throw const FormatException('Telemetry hujan belum tersedia.');
+    return RainSensorReading(value: p?.$1 ?? r!.$1, unit: p != null ? '%' : 'boolean',
+      isRaining: (r?.$1 ?? 0) != 0, hasRainStatus: r != null, timestamp: p?.$2 ?? r!.$2);
   }
 
-  // ==========================================
-  // DISPOSE
-  // ==========================================
-
-  void dispose() {
-    _client.close();
+  Future<WaterFlowSession> fetchLatestWaterFlow([String ignored = '']) async {
+    final json = await _latest(['flow_rate', 'total_water_liters']);
+    final rate = _point(json, 'flow_rate'); final total = _point(json, 'total_water_liters');
+    if (rate == null && total == null) throw const FormatException('Telemetry debit air belum tersedia.');
+    return WaterFlowSession(id: deviceId, value: rate?.$1 ?? 0, unit: 'L/min',
+      totalVolumeLiters: total?.$1 ?? 0, hasTotalVolume: total != null,
+      timestamp: rate?.$2 ?? total!.$2);
   }
+
+  Future<List<DailyRecapRecord>> fetchDailyRecaps() async =>
+      throw UnsupportedError('Rekap harian agregat belum dibuat. Dashboard telemetry ThingsBoard sudah digunakan.');
+
+  void dispose() => _client.close();
 }

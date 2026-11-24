@@ -8,14 +8,17 @@ import '../services/api_service.dart';
 import 'daily_recap_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key});
+  const DashboardScreen({super.key, required this.jwt, required this.deviceId});
+
+  final String jwt;
+  final String deviceId;
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  final ApiService _apiService = ApiService();
+  late final ApiService _apiService = ApiService(jwt: widget.jwt, deviceId: widget.deviceId);
 
   DhtReading? _dht;
   SoilReading? _soil;
@@ -57,9 +60,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     _fetchAllTelemetry();
 
-    // Polling setiap 10 detik.
+    // ESP32 mengirim telemetry setiap 5 menit; polling disamakan agar tidak membebani server.
     _pollingTimer = Timer.periodic(
-      const Duration(seconds: 10),
+      const Duration(minutes: 1),
       (_) => _fetchAllTelemetry(silent: true),
     );
   }

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'views/dashboard_screen.dart';
+import 'views/login_screen.dart';
 
 void main() {
   runApp(const LandiaFarm());
@@ -35,7 +35,7 @@ class LandiaFarm extends StatelessWidget {
           foregroundColor: Color(0xFF1B3321),
         ),
       ),
-      home: home ?? const DashboardScreen(),
+      home: home ?? const LoginScreen(),
     );
   }
 }
