@@ -1,10 +1,15 @@
-
 import 'package:flutter/material.dart';
 
+import '../models/sensor_reading.dart';
 import '../services/api_service.dart';
+import '../services/pdf_export_service.dart';
 
 class DailyRecapScreen extends StatefulWidget {
-  const DailyRecapScreen({super.key, required this.jwt, required this.deviceId});
+  const DailyRecapScreen({
+    super.key,
+    required this.jwt,
+    required this.deviceId,
+  });
 
   final String jwt;
   final String deviceId;
@@ -14,21 +19,38 @@ class DailyRecapScreen extends StatefulWidget {
       _DailyRecapScreenState();
 }
 
-class _DailyRecapScreenState extends State<DailyRecapScreen> {
-  late final ApiService _apiService = ApiService(jwt: widget.jwt, deviceId: widget.deviceId);
+class _DailyRecapScreenState
+    extends State<DailyRecapScreen> {
+  late final ApiService _apiService;
+
+  DateTime _selectedDate = DateTime.now();
+
+  DailyRecapRecord? _record;
 
   bool _isLoading = true;
-  bool _isSupported = false;
+  bool _isExporting = false;
+
   String? _errorMessage;
 
-  static const Color primaryGreen = Color(0xFF1B5E20);
-  static const Color lightGreen = Color(0xFF2E7D32);
-  static const Color backgroundColor = Color(0xFFF3F6F4);
+  static const Color primaryGreen =
+      Color(0xFF1B5E20);
+
+  static const Color lightGreen =
+      Color(0xFF2E7D32);
+
+  static const Color backgroundColor =
+      Color(0xFFF3F6F4);
 
   @override
   void initState() {
     super.initState();
-    _loadRecaps();
+
+    _apiService = ApiService(
+      jwt: widget.jwt,
+      deviceId: widget.deviceId,
+    );
+
+    _loadRecap();
   }
 
   @override
@@ -38,10 +60,10 @@ class _DailyRecapScreenState extends State<DailyRecapScreen> {
   }
 
   // ==========================================================
-  // LOAD DAILY RECAP
+  // LOAD RECAP
   // ==========================================================
 
-  Future<void> _loadRecaps() async {
+  Future<void> _loadRecap() async {
     if (!mounted) return;
 
     setState(() {
@@ -50,26 +72,15 @@ class _DailyRecapScreenState extends State<DailyRecapScreen> {
     });
 
     try {
-      final records = await _apiService.fetchDailyRecaps();
+      final record =
+          await _apiService.fetchDailyRecapForDate(
+        _selectedDate,
+      );
 
       if (!mounted) return;
 
       setState(() {
-        _isSupported = true;
-        _isLoading = false;
-      });
-
-      // Endpoint agregasi belum tersedia.
-      // Ketika backend sudah menyediakan endpoint,
-      // data records akan digunakan untuk membangun kartu rekap.
-      if (records.isEmpty) {
-        return;
-      }
-    } on UnsupportedError {
-      if (!mounted) return;
-
-      setState(() {
-        _isSupported = false;
+        _record = record;
         _isLoading = false;
       });
     } catch (e) {
@@ -79,6 +90,65 @@ class _DailyRecapScreenState extends State<DailyRecapScreen> {
         _isLoading = false;
         _errorMessage = e.toString();
       });
+    }
+  }
+
+  // ==========================================================
+  // DATE PICKER
+  // ==========================================================
+
+  Future<void> _selectDate() async {
+    final selected = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate,
+      firstDate: DateTime(2024),
+      lastDate: DateTime.now(),
+      helpText: 'Pilih tanggal laporan',
+      confirmText: 'PILIH',
+      cancelText: 'BATAL',
+    );
+
+    if (selected == null) return;
+
+    setState(() {
+      _selectedDate = selected;
+    });
+
+    await _loadRecap();
+  }
+
+  // ==========================================================
+  // EXPORT PDF
+  // ==========================================================
+
+  Future<void> _exportPdf() async {
+    if (_record == null) return;
+
+    setState(() {
+      _isExporting = true;
+    });
+
+    try {
+      await PdfExportService.generateDailyRecapPdf(
+        _record!,
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Gagal membuat PDF: $e',
+          ),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isExporting = false;
+        });
+      }
     }
   }
 
@@ -95,96 +165,628 @@ class _DailyRecapScreenState extends State<DailyRecapScreen> {
           'Rekapan Laporan Harian',
           style: TextStyle(
             fontWeight: FontWeight.bold,
-            fontSize: 18,
           ),
         ),
         backgroundColor: primaryGreen,
         foregroundColor: Colors.white,
-        elevation: 0,
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
-            tooltip: 'Periksa Ketersediaan Rekap',
-            onPressed: _isLoading ? null : _loadRecaps,
+            tooltip: 'Refresh laporan',
+            onPressed:
+                _isLoading ? null : _loadRecap,
           ),
         ],
       ),
-      body: _isLoading
-          ? const Center(
-              child: CircularProgressIndicator(
-                color: lightGreen,
-              ),
-            )
-          : _errorMessage != null
-              ? _buildErrorView()
-              : !_isSupported
-                  ? _buildUnavailableView()
-                  : _buildEmptyView(),
+      body: _buildBody(),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_isLoading) {
+      return const Center(
+        child: CircularProgressIndicator(
+          color: lightGreen,
+        ),
+      );
+    }
+
+    if (_errorMessage != null) {
+      return _buildErrorView();
+    }
+
+    if (_record == null) {
+      return _buildEmptyView();
+    }
+
+    return RefreshIndicator(
+      onRefresh: _loadRecap,
+      color: lightGreen,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          _buildDateCard(),
+
+          const SizedBox(height: 16),
+
+          _buildSummaryCard(),
+
+          const SizedBox(height: 16),
+
+          _buildSensorSection(),
+
+          const SizedBox(height: 16),
+
+          _buildRainCard(),
+
+          const SizedBox(height: 16),
+
+          _buildWaterSection(),
+
+          const SizedBox(height: 16),
+
+          _buildDataInformation(),
+
+          const SizedBox(height: 20),
+
+          _buildExportButton(),
+
+          const SizedBox(height: 30),
+        ],
+      ),
     );
   }
 
   // ==========================================================
-  // FEATURE NOT AVAILABLE
+  // DATE CARD
   // ==========================================================
 
-  Widget _buildUnavailableView() {
-    return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+  Widget _buildDateCard() {
+    return Card(
+      elevation: 1,
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
           children: [
             Container(
-              padding: const EdgeInsets.all(24),
+              padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.orange.shade50,
-                shape: BoxShape.circle,
+                color: Colors.green.shade50,
+                borderRadius: BorderRadius.circular(12),
               ),
               child: Icon(
-                Icons.analytics_outlined,
-                size: 64,
-                color: Colors.orange.shade700,
+                Icons.calendar_month,
+                color: primaryGreen,
               ),
             ),
-            const SizedBox(height: 24),
+
+            const SizedBox(width: 12),
+
+            Expanded(
+              child: Column(
+                crossAxisAlignment:
+                    CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Tanggal laporan',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.black54,
+                    ),
+                  ),
+
+                  const SizedBox(height: 4),
+
+                  Text(
+                    _formatDate(_selectedDate),
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            ElevatedButton(
+              onPressed: _selectDate,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: primaryGreen,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Pilih'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ==========================================================
+  // SUMMARY
+  // ==========================================================
+
+  Widget _buildSummaryCard() {
+    final record = _record!;
+
+    return Card(
+      elevation: 1,
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment:
+              CrossAxisAlignment.start,
+          children: [
             const Text(
-              'Rekap Harian Belum Tersedia',
-              textAlign: TextAlign.center,
+              'Ringkasan Harian',
               style: TextStyle(
-                fontSize: 20,
+                fontSize: 16,
                 fontWeight: FontWeight.bold,
-                color: Color(0xFF1E293B),
               ),
             ),
-            const SizedBox(height: 12),
-            const Text(
-              'ThingsBoard saat ini sudah menyediakan '
-              'data telemetry sensor, tetapi aplikasi belum memiliki proses agregasi untuk membuat '
-              'endpoint untuk mengolah data menjadi laporan harian.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 14,
-                height: 1.6,
+
+            const SizedBox(height: 16),
+
+            Row(
+              children: [
+                Expanded(
+                  child: _summaryMetric(
+                    icon: Icons.thermostat,
+                    label: 'Suhu rata-rata',
+                    value:
+                        record.hasTemperature
+                            ? '${record.avgTemperature.toStringAsFixed(1)} °C'
+                            : '--',
+                    color: Colors.orange,
+                  ),
+                ),
+
+                const SizedBox(width: 10),
+
+                Expanded(
+                  child: _summaryMetric(
+                    icon: Icons.water_drop,
+                    label: 'Kelembapan udara',
+                    value:
+                        record.hasHumidity
+                            ? '${record.avgHumidity.toStringAsFixed(1)} %'
+                            : '--',
+                    color: Colors.blue,
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 10),
+
+            Row(
+              children: [
+                Expanded(
+                  child: _summaryMetric(
+                    icon: Icons.grass,
+                    label: 'Kelembapan tanah',
+                    value:
+                        record.hasSoilMoisture
+                            ? '${record.avgSoilMoisture.toStringAsFixed(1)} %'
+                            : '--',
+                    color: Colors.green,
+                  ),
+                ),
+
+                const SizedBox(width: 10),
+
+                Expanded(
+                  child: _summaryMetric(
+                    icon: Icons.water,
+                    label: 'Level tangki',
+                    value:
+                        record.hasTankLevel
+                            ? '${record.avgTankLevel.toStringAsFixed(1)} %'
+                            : '--',
+                    color: Colors.teal,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _summaryMetric({
+    required IconData icon,
+    required String label,
+    required String value,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment:
+            CrossAxisAlignment.start,
+        children: [
+          Icon(
+            icon,
+            color: color,
+            size: 22,
+          ),
+
+          const SizedBox(height: 8),
+
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 11,
+              color: Colors.black54,
+            ),
+          ),
+
+          const SizedBox(height: 4),
+
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ==========================================================
+  // SENSOR SECTION
+  // ==========================================================
+
+  Widget _buildSensorSection() {
+    final record = _record!;
+
+    return _sectionCard(
+      title: 'Statistik Sensor',
+      icon: Icons.analytics,
+      children: [
+        if (record.hasTemperature)
+          _statRow(
+            'Suhu udara',
+            record.avgTemperature,
+            record.minTemperature,
+            record.maxTemperature,
+            '°C',
+          ),
+
+        if (record.hasHumidity)
+          _statRow(
+            'Kelembapan udara',
+            record.avgHumidity,
+            record.minHumidity,
+            record.maxHumidity,
+            '%',
+          ),
+
+        if (record.hasSoilMoisture)
+          _statRow(
+            'Kelembapan tanah',
+            record.avgSoilMoisture,
+            record.minSoilMoisture,
+            record.maxSoilMoisture,
+            '%',
+          ),
+
+        if (record.hasTankLevel)
+          _statRow(
+            'Level tangki',
+            record.avgTankLevel,
+            record.minTankLevel,
+            record.maxTankLevel,
+            '%',
+          ),
+
+        if (!record.hasTemperature &&
+            !record.hasHumidity &&
+            !record.hasSoilMoisture &&
+            !record.hasTankLevel)
+          const Text(
+            'Tidak ada data sensor yang tersedia.',
+            style: TextStyle(
+              color: Colors.black54,
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _statRow(
+    String label,
+    double average,
+    double? minimum,
+    double? maximum,
+    String unit,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        vertical: 10,
+      ),
+      child: Column(
+        crossAxisAlignment:
+            CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+
+          const SizedBox(height: 8),
+
+          Row(
+            children: [
+              Expanded(
+                child: _smallMetric(
+                  'Rata-rata',
+                  '${average.toStringAsFixed(1)} $unit',
+                ),
+              ),
+
+              Expanded(
+                child: _smallMetric(
+                  'Minimum',
+                  minimum == null
+                      ? '--'
+                      : '${minimum.toStringAsFixed(1)} $unit',
+                ),
+              ),
+
+              Expanded(
+                child: _smallMetric(
+                  'Maksimum',
+                  maximum == null
+                      ? '--'
+                      : '${maximum.toStringAsFixed(1)} $unit',
+                ),
+              ),
+            ],
+          ),
+
+          const Divider(),
+        ],
+      ),
+    );
+  }
+
+  Widget _smallMetric(
+    String label,
+    String value,
+  ) {
+    return Column(
+      crossAxisAlignment:
+          CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 10,
+            color: Colors.black54,
+          ),
+        ),
+
+        const SizedBox(height: 4),
+
+        Text(
+          value,
+          style: const TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 12,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ==========================================================
+  // RAIN CARD
+  // ==========================================================
+
+  Widget _buildRainCard() {
+    final status =
+        _record!.dominantRainStatus;
+
+    final isRain =
+        status.toLowerCase().contains('hujan') &&
+        !status.toLowerCase().contains('tidak');
+
+    final color =
+        isRain ? Colors.blue : Colors.orange;
+
+    return _sectionCard(
+      title: 'Status Cuaca',
+      icon: Icons.cloud,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                isRain
+                    ? Icons.umbrella
+                    : Icons.wb_sunny,
+                color: color,
+                size: 30,
+              ),
+
+              const SizedBox(width: 12),
+
+              Expanded(
+                child: Column(
+                  crossAxisAlignment:
+                      CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Status dominan hari ini',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.black54,
+                      ),
+                    ),
+
+                    const SizedBox(height: 4),
+
+                    Text(
+                      status,
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: color,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ==========================================================
+  // WATER SECTION
+  // ==========================================================
+
+  Widget _buildWaterSection() {
+    final flow =
+        _record!.flowSession;
+
+    return _sectionCard(
+      title: 'Penggunaan Air',
+      icon: Icons.water,
+      children: [
+        if (flow == null)
+          const Text(
+            'Belum terdapat data penggunaan air '
+            'yang dapat dihitung.',
+            style: TextStyle(
+              color: Colors.black54,
+            ),
+          )
+        else ...[
+          _waterMetric(
+            'Debit rata-rata',
+            '${flow.flowRateLpm.toStringAsFixed(2)} L/min',
+          ),
+
+          if (flow.hasTotalVolume)
+            _waterMetric(
+              'Volume air',
+              '${flow.totalVolumeLiters.toStringAsFixed(2)} Liter',
+            ),
+
+          if (flow.hasDuration)
+            _waterMetric(
+              'Durasi aliran',
+              '${flow.durationMinutes.toStringAsFixed(1)} menit',
+            ),
+
+          if (flow.hasCost)
+            _waterMetric(
+              'Biaya air',
+              _formatRupiah(flow.costIdr),
+            ),
+
+          if (!flow.hasTotalVolume &&
+              !flow.hasCost)
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: Text(
+                'Volume dan biaya belum dapat dihitung '
+                'dari telemetry yang tersedia.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.orange,
+                ),
+              ),
+            ),
+        ],
+      ],
+    );
+  }
+
+  Widget _waterMetric(
+    String label,
+    String value,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        vertical: 8,
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(
                 color: Colors.black54,
               ),
             ),
-            const SizedBox(height: 24),
-            _buildInformationCard(),
-            const SizedBox(height: 24),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: _loadRecaps,
-                icon: const Icon(Icons.refresh),
-                label: const Text('Periksa Kembali'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: lightGreen,
-                  side: const BorderSide(
-                    color: lightGreen,
-                  ),
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 14,
-                  ),
+          ),
+
+          Text(
+            value,
+            style: const TextStyle(
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ==========================================================
+  // DATA INFORMATION
+  // ==========================================================
+
+  Widget _buildDataInformation() {
+    final record = _record!;
+
+    return Card(
+      color: Colors.blue.shade50,
+      elevation: 0,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          children: [
+            Icon(
+              Icons.info_outline,
+              color: Colors.blue.shade700,
+            ),
+
+            const SizedBox(width: 10),
+
+            Expanded(
+              child: Text(
+                'Jumlah data telemetry yang berhasil '
+                'diproses: ${record.totalDataPoints}',
+                style: TextStyle(
+                  color: Colors.blue.shade900,
+                  fontSize: 12,
                 ),
               ),
             ),
@@ -195,122 +797,89 @@ class _DailyRecapScreenState extends State<DailyRecapScreen> {
   }
 
   // ==========================================================
-  // INFORMATION CARD
+  // EXPORT BUTTON
   // ==========================================================
 
-  Widget _buildInformationCard() {
-    return Container(
+  Widget _buildExportButton() {
+    return SizedBox(
       width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: Colors.green.shade100,
+      height: 52,
+      child: ElevatedButton.icon(
+        onPressed:
+            _isExporting || _record == null
+                ? null
+                : _exportPdf,
+        icon: _isExporting
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              )
+            : const Icon(
+                Icons.picture_as_pdf,
+              ),
+        label: Text(
+          _isExporting
+              ? 'Membuat PDF...'
+              : 'Export Laporan PDF',
+        ),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: primaryGreen,
+          foregroundColor: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
         ),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Data yang nantinya tersedia',
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 14,
-              color: Color(0xFF1E293B),
-            ),
-          ),
-          const SizedBox(height: 14),
-          _buildFeatureItem(
-            Icons.thermostat,
-            'Rata-rata suhu dan kelembapan udara',
-          ),
-          _buildFeatureItem(
-            Icons.grass,
-            'Rata-rata kelembapan tanah',
-          ),
-          _buildFeatureItem(
-            Icons.water,
-            'Rata-rata level air tangki',
-          ),
-          _buildFeatureItem(
-            Icons.cloud,
-            'Rekapitulasi kondisi sensor hujan',
-          ),
-          _buildFeatureItem(
-            Icons.waves,
-            'Total volume dan durasi aliran air',
-          ),
-          _buildFeatureItem(
-            Icons.picture_as_pdf,
-            'Ekspor laporan harian ke PDF',
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFeatureItem(
-    IconData icon,
-    String title,
-  ) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Row(
-        children: [
-          Icon(
-            icon,
-            size: 19,
-            color: lightGreen,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              title,
-              style: const TextStyle(
-                fontSize: 12,
-                color: Colors.black87,
-              ),
-            ),
-          ),
-        ],
-      ),
     );
   }
 
   // ==========================================================
-  // EMPTY VIEW
+  // SECTION CARD
   // ==========================================================
 
-  Widget _buildEmptyView() {
-    return const Center(
+  Widget _sectionCard({
+    required String title,
+    required IconData icon,
+    required List<Widget> children,
+  }) {
+    return Card(
+      color: Colors.white,
+      elevation: 1,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
       child: Padding(
-        padding: EdgeInsets.all(24),
+        padding: const EdgeInsets.all(16),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment:
+              CrossAxisAlignment.start,
           children: [
-            Icon(
-              Icons.calendar_month_outlined,
-              size: 64,
-              color: Colors.grey,
+            Row(
+              children: [
+                Icon(
+                  icon,
+                  color: primaryGreen,
+                ),
+
+                const SizedBox(width: 8),
+
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+              ],
             ),
-            SizedBox(height: 16),
-            Text(
-              'Belum Ada Rekapan',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            SizedBox(height: 8),
-            Text(
-              'Belum ada data agregasi harian yang tersedia.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 13,
-                color: Colors.black54,
-              ),
-            ),
+
+            const SizedBox(height: 16),
+
+            ...children,
           ],
         ),
       ),
@@ -326,43 +895,122 @@ class _DailyRecapScreenState extends State<DailyRecapScreen> {
       child: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisAlignment:
+              MainAxisAlignment.center,
           children: [
-            const Icon(
+            Icon(
               Icons.cloud_off,
               size: 60,
-              color: Colors.redAccent,
+              color: Colors.red.shade300,
             ),
+
             const SizedBox(height: 16),
+
             const Text(
-              'Gagal Memuat Rekapan',
+              'Gagal mengambil laporan',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,
               ),
             ),
-            const SizedBox(height: 8),
+
+            const SizedBox(height: 10),
+
             Text(
               _errorMessage ?? 'Terjadi kesalahan.',
               textAlign: TextAlign.center,
               style: const TextStyle(
-                fontSize: 12,
                 color: Colors.black54,
               ),
             ),
+
             const SizedBox(height: 20),
+
             ElevatedButton.icon(
-              onPressed: _loadRecaps,
+              onPressed: _loadRecap,
               icon: const Icon(Icons.refresh),
               label: const Text('Coba Lagi'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: lightGreen,
-                foregroundColor: Colors.white,
-              ),
             ),
           ],
         ),
       ),
     );
+  }
+
+  // ==========================================================
+  // EMPTY VIEW
+  // ==========================================================
+
+  Widget _buildEmptyView() {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment:
+              MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.analytics_outlined,
+              size: 60,
+              color: Colors.grey,
+            ),
+
+            SizedBox(height: 16),
+
+            Text(
+              'Data laporan belum tersedia',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 18,
+              ),
+            ),
+
+            SizedBox(height: 8),
+
+            Text(
+              'Belum ada telemetry pada tanggal '
+              'yang dipilih.',
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ==========================================================
+  // FORMATTING
+  // ==========================================================
+
+  String _formatDate(DateTime date) {
+    final months = [
+      'Januari',
+      'Februari',
+      'Maret',
+      'April',
+      'Mei',
+      'Juni',
+      'Juli',
+      'Agustus',
+      'September',
+      'Oktober',
+      'November',
+      'Desember',
+    ];
+
+    return '${date.day} ${months[date.month - 1]} '
+        '${date.year}';
+  }
+
+  String _formatRupiah(double amount) {
+    final digits = amount.round().toString();
+
+    final formatted =
+        digits.replaceAllMapped(
+      RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
+      (match) => '${match[1]}.',
+    );
+
+    return 'Rp $formatted';
   }
 }

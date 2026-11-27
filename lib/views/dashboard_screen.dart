@@ -7,8 +7,16 @@ import '../models/sensor_reading.dart';
 import '../services/api_service.dart';
 import 'daily_recap_screen.dart';
 
+// ============================================================
+// DASHBOARD SCREEN
+// ============================================================
+
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key, required this.jwt, required this.deviceId});
+  const DashboardScreen({
+    super.key,
+    required this.jwt,
+    required this.deviceId,
+  });
 
   final String jwt;
   final String deviceId;
@@ -18,7 +26,18 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  late final ApiService _apiService = ApiService(jwt: widget.jwt, deviceId: widget.deviceId);
+  // ==========================================================
+  // API SERVICE
+  // ==========================================================
+
+  late final ApiService _apiService = ApiService(
+    jwt: widget.jwt,
+    deviceId: widget.deviceId,
+  );
+
+  // ==========================================================
+  // SENSOR DATA
+  // ==========================================================
 
   DhtReading? _dht;
   SoilReading? _soil;
@@ -26,17 +45,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
   RainSensorReading? _rain;
   WaterFlowSession? _flow;
 
+  // ==========================================================
+  // STATE
+  // ==========================================================
+
   final Map<String, String> _sensorErrors = {};
 
   bool _isLoading = true;
   bool _isFetching = false;
 
   String? _errorMessage;
+
   Timer? _pollingTimer;
+
+
+  // ==========================================================
+  // CONSTANTS
+  // ==========================================================
 
   static const Color primaryGreen = Color(0xFF1B5E20);
   static const Color lightGreen = Color(0xFF2E7D32);
   static const Color backgroundColor = Color(0xFFF3F6F4);
+
+  static const Duration pollingInterval =
+      Duration(seconds: 15);
+
+  static const Duration staleThreshold =
+      Duration(seconds: 60);
+
+  // ==========================================================
+  // GETTERS
+  // ==========================================================
 
   bool get _hasAnyData =>
       _dht != null ||
@@ -45,14 +84,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _rain != null ||
       _flow != null;
 
-  bool _isPercentageUnit(String unit) {
-    final normalized = unit.trim().toLowerCase();
 
-    return normalized == '%' ||
-        normalized == 'percent' ||
-        normalized == 'percentage' ||
-        normalized == 'persen';
-  }
+
+  // ==========================================================
+  // LIFECYCLE
+  // ==========================================================
 
   @override
   void initState() {
@@ -60,10 +96,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     _fetchAllTelemetry();
 
-    // ESP32 mengirim telemetry setiap 15 detik; polling mengikuti interval tersebut.
     _pollingTimer = Timer.periodic(
-      const Duration(seconds: 15),
-      (_) => _fetchAllTelemetry(silent: true),
+      pollingInterval,
+      (_) {
+        if (mounted) {
+          _fetchAllTelemetry(silent: true);
+        }
+      },
     );
   }
 
@@ -75,7 +114,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   // ==========================================================
-  // FETCH SENSOR DATA
+  // FETCH SENSOR
   // ==========================================================
 
   Future<T?> _fetchSensor<T>(
@@ -95,6 +134,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  // ==========================================================
+  // FETCH ALL TELEMETRY
+  // ==========================================================
+
   Future<void> _fetchAllTelemetry({
     bool silent = false,
   }) async {
@@ -110,77 +153,95 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     try {
+      // ======================================================
+      // IMPORTANT:
+      // Sensor mengambil telemetry dari Device Sensor C1.
+      // Tidak menggunakan sensor ID terpisah.
+      // ======================================================
+
       final results = await Future.wait<Object?>([
-        _fetchSensor(
+        _fetchSensor<DhtReading>(
           'DHT',
-          () => _apiService.fetchLatestDht(
-            ApiService.dhtSensorId,
-          ),
+          () => _apiService.fetchLatestDht(),
         ),
-        _fetchSensor(
+        _fetchSensor<SoilReading>(
           'Soil',
-          () => _apiService.fetchLatestSoil(
-            ApiService.soilSensorId,
-          ),
+          () => _apiService.fetchLatestSoil(),
         ),
-        _fetchSensor(
+        _fetchSensor<TankLevelReading>(
           'Water Level',
-          () => _apiService.fetchLatestTankLevel(
-            ApiService.waterLevelSensorId,
-          ),
+          () => _apiService.fetchLatestTankLevel(),
         ),
-        _fetchSensor(
+        _fetchSensor<RainSensorReading>(
           'Rain',
-          () => _apiService.fetchLatestRain(
-            ApiService.rainSensorId,
-          ),
+          () => _apiService.fetchLatestRain(),
         ),
-        _fetchSensor(
+        _fetchSensor<WaterFlowSession>(
           'Flow',
-          () => _apiService.fetchLatestWaterFlow(
-            ApiService.flowSensorId,
-          ),
+          () => _apiService.fetchLatestWaterFlow(),
         ),
       ]);
 
       if (!mounted) return;
 
-      final dht = results[0] as DhtReading?;
-      final soil = results[1] as SoilReading?;
-      final tank = results[2] as TankLevelReading?;
-      final rain = results[3] as RainSensorReading?;
-      final flow = results[4] as WaterFlowSession?;
+      final newDht = results[0] as DhtReading?;
+      final newSoil = results[1] as SoilReading?;
+      final newTank = results[2] as TankLevelReading?;
+      final newRain = results[3] as RainSensorReading?;
+      final newFlow = results[4] as WaterFlowSession?;
 
       final hasNewData = results.any(
         (result) => result != null,
       );
 
       setState(() {
-        // Pertahankan data terakhir jika request sensor gagal.
-        if (dht != null) _dht = dht;
-        if (soil != null) _soil = soil;
-        if (tank != null) _tank = tank;
-        if (rain != null) _rain = rain;
-        if (flow != null) _flow = flow;
+        // ----------------------------------------------------
+        // UPDATE DATA YANG BERHASIL
+        // ----------------------------------------------------
+        // Sensor gagal tidak menghapus data sebelumnya.
+
+        if (newDht != null) {
+          _dht = newDht;
+        }
+
+        if (newSoil != null) {
+          _soil = newSoil;
+        }
+
+        if (newTank != null) {
+          _tank = newTank;
+        }
+
+        if (newRain != null) {
+          _rain = newRain;
+        }
+
+        if (newFlow != null) {
+          _flow = newFlow;
+        }
 
         _isLoading = false;
 
-        if (_sensorErrors.isNotEmpty) {
-          if (!_hasAnyData) {
-            _errorMessage =
-                'Belum berhasil mengambil data sensor. '
-                'Periksa koneksi internet dan server ThingsBoard.';
-          } else if (!hasNewData) {
-            _errorMessage =
-                'Pembaruan gagal. Data terakhir yang berhasil '
-                'diterima masih ditampilkan.';
-          } else {
-            _errorMessage =
-                'Sebagian sensor gagal diperbarui. '
-                'Data sensor lainnya tetap ditampilkan.';
-          }
-        } else {
+
+        // ----------------------------------------------------
+        // ERROR HANDLING
+        // ----------------------------------------------------
+
+        if (_sensorErrors.isEmpty) {
           _errorMessage = null;
+        } else if (!_hasAnyData) {
+          _errorMessage =
+              'Belum berhasil mengambil data sensor. '
+              'Periksa koneksi internet dan server ThingsBoard.';
+        } else if (!hasNewData) {
+          _errorMessage =
+              'Pembaruan sensor gagal. '
+              'Data terakhir yang berhasil diterima '
+              'masih ditampilkan.';
+        } else {
+          _errorMessage =
+              'Sebagian sensor gagal diperbarui. '
+              'Sensor yang berhasil tetap ditampilkan.';
         }
       });
     } catch (e) {
@@ -188,28 +249,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       setState(() {
         _isLoading = false;
-        _errorMessage = 'Gagal mengambil data sensor: $e';
+        _errorMessage =
+            'Gagal mengambil telemetry: $e';
       });
     } finally {
       _isFetching = false;
+
+      if (mounted && _isLoading) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
   // ==========================================================
-  // HELPER
+  // GENERAL HELPERS
   // ==========================================================
 
-  Color _getSoilConditionColor(String condition) {
-    switch (condition) {
-      case 'Kering':
-        return Colors.orange.shade700;
-      case 'Lembap':
-        return Colors.green.shade700;
-      case 'Basah':
-        return Colors.blue.shade700;
-      default:
-        return Colors.grey.shade700;
-    }
+  bool _isPercentageUnit(String unit) {
+    final normalized = unit.trim().toLowerCase();
+
+    return normalized == '%' ||
+        normalized == 'percent' ||
+        normalized == 'percentage' ||
+        normalized == 'persen';
   }
 
   String _sensorError(String sensorName) {
@@ -217,27 +281,59 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'Data sensor belum tersedia.';
   }
 
-  Widget _buildUnavailableText({
-    String message = 'Data sensor belum tersedia.',
-  }) {
-    return Padding(
-      padding: const EdgeInsets.only(top: 8),
-      child: Text(
-        message,
-        style: const TextStyle(
-          fontSize: 11,
-          color: Colors.black54,
-          fontStyle: FontStyle.italic,
-        ),
-      ),
-    );
+  Color _getSoilConditionColor(String condition) {
+    switch (condition) {
+      case 'Kering':
+        return Colors.orange.shade700;
+
+      case 'Lembap':
+        return Colors.green.shade700;
+
+      case 'Basah':
+        return Colors.blue.shade700;
+
+      default:
+        return Colors.grey.shade700;
+    }
   }
+
+  String _formatAge(Duration age) {
+    if (age.inDays > 0) {
+      return '${age.inDays} hari';
+    }
+
+    if (age.inHours > 0) {
+      return '${age.inHours} jam';
+    }
+
+    if (age.inMinutes > 0) {
+      return '${age.inMinutes} menit';
+    }
+
+    return '${age.inSeconds} detik';
+  }
+
+  String _formatRupiah(double amount) {
+    final value = amount.round().toString();
+
+    final formatted = value.replaceAllMapped(
+      RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
+      (match) => '${match[1]}.',
+    );
+
+    return 'Rp $formatted';
+  }
+
+  // ==========================================================
+  // CARD HELPER
+  // ==========================================================
 
   Widget _buildCard({
     required Widget child,
     Color? borderColor,
   }) {
     return Container(
+      width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white,
@@ -265,6 +361,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
         fontSize: 16,
         fontWeight: FontWeight.bold,
         color: Color(0xFF1E293B),
+      ),
+    );
+  }
+
+  Widget _buildUnavailableText({
+    String message = 'Data sensor belum tersedia.',
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Text(
+        message,
+        style: const TextStyle(
+          fontSize: 11,
+          color: Colors.black54,
+          fontStyle: FontStyle.italic,
+        ),
       ),
     );
   }
@@ -302,6 +414,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         elevation: 0,
         actions: [
           IconButton(
+            tooltip: 'Perbarui Data',
+            onPressed: _isFetching
+                ? null
+                : () => _fetchAllTelemetry(),
             icon: _isFetching
                 ? const SizedBox(
                     width: 20,
@@ -312,10 +428,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                   )
                 : const Icon(Icons.refresh),
-            tooltip: 'Perbarui Data',
-            onPressed: _isFetching
-                ? null
-                : () => _fetchAllTelemetry(),
           ),
         ],
       ),
@@ -335,7 +447,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         const AlwaysScrollableScrollPhysics(),
                     padding: const EdgeInsets.all(16),
                     children: [
-                      _buildRecapBannerButton(context),
+                      _buildRecapBannerButton(),
 
                       const SizedBox(height: 16),
 
@@ -356,9 +468,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         crossAxisAlignment:
                             CrossAxisAlignment.start,
                         children: [
-                          Expanded(child: _buildSoilCard()),
+                          Expanded(
+                            child: _buildSoilCard(),
+                          ),
                           const SizedBox(width: 12),
-                          Expanded(child: _buildRainCard()),
+                          Expanded(
+                            child: _buildRainCard(),
+                          ),
                         ],
                       ),
 
@@ -413,7 +529,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  _errorMessage!,
+                  _errorMessage ?? 'Pembaruan sensor bermasalah.',
                   style: TextStyle(
                     fontSize: 12,
                     color: Colors.orange.shade900,
@@ -490,7 +606,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // DAILY RECAP BUTTON
   // ==========================================================
 
-  Widget _buildRecapBannerButton(BuildContext context) {
+  Widget _buildRecapBannerButton() {
     return InkWell(
       onTap: () {
         Navigator.push(
@@ -578,11 +694,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildDhtCard() {
     final hasData = _dht != null;
 
-    final temperature =
-        hasData ? _dht!.temperature.toStringAsFixed(1) : '--';
+    final temperature = hasData
+        ? _dht!.temperature.toStringAsFixed(1)
+        : '--';
 
-    final humidity =
-        hasData ? _dht!.humidity.toStringAsFixed(1) : '--';
+    final humidity = hasData
+        ? _dht!.humidity.toStringAsFixed(1)
+        : '--';
 
     return _buildCard(
       borderColor: Colors.orange.shade100,
@@ -613,7 +731,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                 ),
               ),
-              _buildConnectionDot(hasData, hasData ? _dht!.timestamp : null),
+              _buildConnectionDot(
+                hasData,
+                hasData ? _dht!.timestamp : null,
+              ),
             ],
           ),
           const SizedBox(height: 14),
@@ -774,93 +895,94 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // RAIN CARD
   // ==========================================================
 
+  Widget _buildRainCard() {
+    final hasData = _rain != null;
+    final hasRainStatus = _rain?.hasRainStatus ?? false;
+    final isRaining = _rain?.isRaining ?? false;
 
-Widget _buildRainCard() {
-  final hasData = _rain != null;
-  final hasRainStatus = _rain?.hasRainStatus ?? false;
-  final isRaining = _rain?.isRaining ?? false;
+    final statusText = !hasData
+        ? 'Tidak tersedia'
+        : _rain!.statusText;
 
-  final statusText = !hasData
-      ? 'Tidak tersedia'
-      : _rain!.statusText;
+    final accentColor = !hasData
+        ? Colors.grey.shade700
+        : hasRainStatus
+            ? (isRaining
+                ? Colors.indigo.shade700
+                : Colors.amber.shade800)
+            : Colors.blue.shade700;
 
-  final accentColor = !hasData
-      ? Colors.grey.shade700
-      : hasRainStatus
-          ? (isRaining
-              ? Colors.indigo.shade700
-              : Colors.amber.shade800)
-          : Colors.blue.shade700;
+    final bgColor = !hasData
+        ? Colors.grey.shade100
+        : hasRainStatus
+            ? (isRaining
+                ? Colors.indigo.shade50
+                : Colors.amber.shade50)
+            : Colors.blue.shade50;
 
-  final bgColor = !hasData
-      ? Colors.grey.shade100
-      : hasRainStatus
-          ? (isRaining
-              ? Colors.indigo.shade50
-              : Colors.amber.shade50)
-          : Colors.blue.shade50;
-
-  return _buildCard(
-    borderColor: accentColor.withValues(alpha: 0.2),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: bgColor,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Icon(
-                isRaining ? Icons.water_drop : Icons.wb_sunny,
-                color: accentColor,
-              ),
-            ),
-            const SizedBox(width: 10),
-            const Expanded(
-              child: Text(
-                'Sensor Hujan',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 13,
-                  color: Color(0xFF334155),
+    return _buildCard(
+      borderColor: accentColor.withValues(alpha: 0.2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: bgColor,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(
+                  isRaining
+                      ? Icons.water_drop
+                      : Icons.wb_sunny,
+                  color: accentColor,
                 ),
               ),
-            ),
-            _buildConnectionDot(
-              hasData,
-              hasData ? _rain!.timestamp : null,
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        Text(
-          statusText,
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.bold,
-            color: accentColor,
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  'Sensor Hujan',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                    color: Color(0xFF334155),
+                  ),
+                ),
+              ),
+              _buildConnectionDot(
+                hasData,
+                hasData ? _rain!.timestamp : null,
+              ),
+            ],
           ),
-        ),
-        const SizedBox(height: 8),
-        _buildFlowMetricItem(
-          label: 'Persentase Hujan (rain_percent)',
-          value: hasData
-              ? '${_rain!.rainPercent.toStringAsFixed(1)} %'
-              : '--',
-          icon: Icons.water_drop_outlined,
-          color: Colors.blue.shade700,
-        ),
-        if (!hasData)
-          _buildUnavailableText(
-            message: _sensorError('Rain'),
+          const SizedBox(height: 12),
+          Text(
+            statusText,
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: accentColor,
+            ),
           ),
-      ],
-    ),
-  );
-}
+          const SizedBox(height: 8),
+          _buildFlowMetricItem(
+            label: 'Persentase Hujan (rain_percent)',
+            value: hasData
+                ? '${_rain!.rainPercent.toStringAsFixed(1)} %'
+                : '--',
+            icon: Icons.water_drop_outlined,
+            color: Colors.blue.shade700,
+          ),
+          if (!hasData)
+            _buildUnavailableText(
+              message: _sensorError('Rain'),
+            ),
+        ],
+      ),
+    );
+  }
 
   // ==========================================================
   // WATER LEVEL CARD
@@ -918,20 +1040,21 @@ Widget _buildRainCard() {
                   ),
                 ),
               ),
-              _buildConnectionDot(hasData, hasData ? _tank!.timestamp : null),
+              _buildConnectionDot(
+                hasData,
+                hasData ? _tank!.timestamp : null,
+              ),
             ],
           ),
           const SizedBox(height: 12),
-
           Text(
-            hasData ? '$value $unit' : '--',
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 24,
-              color: Colors.blue.shade800,
-            ),
-          ),
-
+  hasData ? '$value $unit' : '--',
+  style: TextStyle(
+    fontWeight: FontWeight.bold,
+    fontSize: 24,
+    color: Colors.blue.shade800,
+  ),
+),
           if (isPercentage) ...[
             const SizedBox(height: 12),
             ClipRRect(
@@ -940,16 +1063,13 @@ Widget _buildRainCard() {
                 value: percentageValue / 100,
                 minHeight: 10,
                 backgroundColor: Colors.blue.shade50,
-                valueColor:
-                    AlwaysStoppedAnimation<Color>(
+                valueColor: AlwaysStoppedAnimation<Color>(
                   Colors.blue.shade600,
                 ),
               ),
             ),
           ],
-
           const SizedBox(height: 8),
-
           Text(
             hasDistance
                 ? distance
@@ -961,7 +1081,6 @@ Widget _buildRainCard() {
               color: Colors.black54,
             ),
           ),
-
           if (!hasData)
             _buildUnavailableText(
               message: _sensorError('Water Level'),
@@ -975,24 +1094,19 @@ Widget _buildRainCard() {
   // FLOW CARD
   // ==========================================================
 
-
 Widget _buildFlowCard() {
   final hasData = _flow != null;
 
   final rate = hasData
-      ? '${_flow!.value.toStringAsFixed(2)} L/min'
+      ? '${_flow!.value.toStringAsFixed(2)} ${_flow!.unit}'
       : '--';
 
   final volume = hasData && _flow!.hasTotalVolume
       ? '${_flow!.totalVolumeLiters.toStringAsFixed(3)} liter'
       : 'Belum tersedia';
 
-  final consumption = hasData && _flow!.hasConsumptionM3
-      ? '${_flow!.consumptionM3.toStringAsFixed(6)} m³'
-      : 'Belum tersedia';
-
-  final tariff = hasData && _flow!.hasTariff
-      ? 'Rp ${_flow!.tariffPerM3.toStringAsFixed(0)} / m³'
+  final duration = hasData && _flow!.hasDuration
+      ? '${_flow!.durationMinutes} menit'
       : 'Belum tersedia';
 
   final cost = hasData && _flow!.hasCost
@@ -1031,7 +1145,7 @@ Widget _buildFlowCard() {
                     ),
                   ),
                   Text(
-                    'Monitoring volume air yang melewati flow sensor',
+                    'Monitoring aliran dan penggunaan air',
                     style: TextStyle(
                       fontSize: 11,
                       color: Colors.black54,
@@ -1050,7 +1164,7 @@ Widget _buildFlowCard() {
         const Divider(height: 24),
 
         _buildFlowMetricItem(
-          label: 'Debit Air (flow_rate)',
+          label: 'Debit Air',
           value: rate,
           icon: Icons.speed,
           color: Colors.teal.shade700,
@@ -1059,43 +1173,35 @@ Widget _buildFlowCard() {
         const SizedBox(height: 12),
 
         _buildFlowMetricItem(
-          label: 'Total Volume Air (total_water_liters)',
+          label: 'Total Volume Air',
           value: volume,
           icon: Icons.opacity,
-          color: Colors.teal.shade700,
-        ),
-
-        const SizedBox(height: 12),
-
-        _buildFlowMetricItem(
-          label: 'Konsumsi Air (water_consumption_m3)',
-          value: consumption,
-          icon: Icons.water,
           color: Colors.blue.shade700,
         ),
 
         const SizedBox(height: 12),
 
         _buildFlowMetricItem(
-          label: 'Tarif Air (water_tariff_rupiah_per_m3)',
-          value: tariff,
-          icon: Icons.price_change_outlined,
-          color: Colors.blueGrey.shade700,
+          label: 'Durasi Penggunaan Air',
+          value: duration,
+          icon: Icons.timer_outlined,
+          color: Colors.orange.shade700,
         ),
 
         const SizedBox(height: 12),
 
         _buildFlowMetricItem(
-          label: 'Estimasi Biaya (water_cost_rupiah)',
+          label: 'Estimasi Biaya Air',
           value: cost,
           icon: Icons.payments_outlined,
           color: Colors.green.shade800,
         ),
 
         const SizedBox(height: 8),
+
         const Text(
-          'Catatan: biaya dihitung dari tarif konfigurasi ThingsBoard/ESP32. '
-          'Pastikan nilai tarif sudah sesuai kondisi sumber air Landia Farm.',
+          'Catatan: estimasi biaya bergantung pada nilai '
+          'tarif dan data volume yang dikirim oleh ESP32.',
           style: TextStyle(
             fontSize: 10,
             color: Colors.black54,
@@ -1110,6 +1216,10 @@ Widget _buildFlowCard() {
     ),
   );
 }
+
+  // ==========================================================
+  // FLOW METRIC
+  // ==========================================================
 
   Widget _buildFlowMetricItem({
     required String label,
@@ -1166,30 +1276,42 @@ Widget _buildFlowCard() {
   // CONNECTION INDICATOR
   // ==========================================================
 
-  Widget _buildConnectionDot(bool hasData, DateTime? timestamp) {
-    final age = timestamp == null ? null : DateTime.now().difference(timestamp);
-    final fresh = age != null && age >= Duration.zero && age <= const Duration(seconds: 60);
-    final color = !hasData ? Colors.grey : (fresh ? Colors.green : Colors.orange);
+  Widget _buildConnectionDot(
+    bool hasData,
+    DateTime? timestamp,
+  ) {
+    final age = timestamp == null
+        ? null
+        : DateTime.now().difference(timestamp);
+
+    final fresh = age != null &&
+        age >= Duration.zero &&
+        age <= staleThreshold;
+
+    final color = !hasData
+        ? Colors.grey
+        : fresh
+            ? Colors.green
+            : Colors.orange;
+
     final message = !hasData
         ? 'Belum ada data sensor'
         : fresh
             ? 'Telemetry diperbarui dalam 60 detik terakhir'
-            : 'Data terakhir sudah ${_formatAge(age!)}. Periksa ESP32 atau koneksi internet.';
+            : 'Data terakhir sudah ${_formatAge(age!)}. '
+                'Periksa ESP32 atau koneksi internet.';
+
     return Tooltip(
       message: message,
       child: Container(
         width: 9,
         height: 9,
-        decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: color,
+        ),
       ),
     );
-  }
-
-  String _formatAge(Duration age) {
-    if (age.inDays > 0) return '${age.inDays} hari';
-    if (age.inHours > 0) return '${age.inHours} jam';
-    if (age.inMinutes > 0) return '${age.inMinutes} menit';
-    return '${age.inSeconds} detik';
   }
 
   // ==========================================================
@@ -1209,11 +1331,14 @@ Widget _buildFlowCard() {
       return const SizedBox.shrink();
     }
 
-    timestamps.sort((a, b) => b.compareTo(a));
+    timestamps.sort(
+      (a, b) => b.compareTo(a),
+    );
 
     final latest = timestamps.first;
     final age = DateTime.now().difference(latest);
-    final isStale = age > const Duration(seconds: 60);
+
+    final isStale = age > staleThreshold;
 
     final date =
         '${latest.day.toString().padLeft(2, '0')}/'
@@ -1230,34 +1355,27 @@ Widget _buildFlowCard() {
         children: [
           Text(
             'Data terbaru diterima: $date $time',
-            style: const TextStyle(fontSize: 11, color: Colors.black54),
+            style: const TextStyle(
+              fontSize: 11,
+              color: Colors.black54,
+            ),
             textAlign: TextAlign.center,
           ),
           if (isStale) ...[
             const SizedBox(height: 4),
             Text(
-              'DATA LAMA — pembaruan terakhir ${_formatAge(age)} lalu. ESP32 mungkin offline.',
-              style: const TextStyle(fontSize: 11, color: Colors.deepOrange, fontWeight: FontWeight.w600),
+              'DATA LAMA — pembaruan terakhir '
+              '${_formatAge(age)} lalu. ESP32 mungkin offline.',
+              style: const TextStyle(
+                fontSize: 11,
+                color: Colors.deepOrange,
+                fontWeight: FontWeight.w600,
+              ),
               textAlign: TextAlign.center,
             ),
           ],
         ],
       ),
     );
-  }
-
-  // ==========================================================
-  // RUPIAH FORMATTER
-  // ==========================================================
-
-  String _formatRupiah(double amount) {
-    final intVal = amount.round();
-
-    final formatted = intVal.toString().replaceAllMapped(
-      RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
-      (Match match) => '${match[1]}.',
-    );
-
-    return 'Rp $formatted';
   }
 }

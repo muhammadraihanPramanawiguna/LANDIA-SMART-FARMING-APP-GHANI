@@ -1,5 +1,3 @@
-
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -25,39 +23,15 @@ class ApiService {
     http.Client? client,
   }) : _client = client ?? http.Client();
 
-  static const String baseUrl = String.fromEnvironment(
-    'TB_BASE_URL',
-    defaultValue: 'http://194.233.73.154:8080',
-  );
-
-  static const String deviceName = 'Sensor C1';
-
-  static const String dhtSensorId = 'dht';
-  static const String soilSensorId = 'soil';
-  static const String waterLevelSensorId = 'water_level';
-  static const String rainSensorId = 'rain';
-  static const String flowSensorId = 'flow';
-
-  static const List<String> telemetryKeys = [
-    'temperature',
-    'humidity',
-    'soil_moisture',
-    'rain_percent',
-    'is_raining',
-    'flow_rate',
-    'total_water_liters',
-    'water_consumption_m3',
-    'water_cost_rupiah',
-    'water_level_distance_cm',
-    'water_level_percent',
-    'water_tariff_rupiah_per_m3',
-  ];
+  static const String baseUrl =
+      'http://194.233.73.154:8080';
 
   final String jwt;
   final String deviceId;
   final http.Client _client;
 
-  Future<Map<String, dynamic>>? _telemetryRequest;
+  static const Duration requestTimeout =
+      Duration(seconds: 20);
 
   static Uri _url(
     String path, [
@@ -68,40 +42,63 @@ class ApiService {
     );
   }
 
-  Future<Map<String, dynamic>> _requestJson(
+  // ==========================================================
+  // HTTP REQUEST
+  // ==========================================================
+
+  static Future<Map<String, dynamic>> _requestJson(
+    http.Client client,
     String method,
     Uri uri, {
     String? body,
     String? bearer,
+    Map<String, String>? headers,
   }) async {
-    final headers = <String, String>{
+    final requestHeaders = <String, String>{
       'Accept': 'application/json',
+      ...?headers,
     };
 
     if (body != null) {
-      headers['Content-Type'] = 'application/json';
+      requestHeaders['Content-Type'] =
+          'application/json';
     }
 
     if (bearer != null && bearer.isNotEmpty) {
-      headers['X-Authorization'] = 'Bearer $bearer';
+      requestHeaders['X-Authorization'] =
+          'Bearer $bearer';
     }
 
     late http.Response response;
 
-    if (method == 'POST') {
-      response = await _client
-          .post(uri, headers: headers, body: body)
-          .timeout(const Duration(seconds: 12));
-    } else {
-      response = await _client
-          .get(uri, headers: headers)
-          .timeout(const Duration(seconds: 12));
+    try {
+      if (method == 'POST') {
+        response = await client
+            .post(
+              uri,
+              headers: requestHeaders,
+              body: body,
+            )
+            .timeout(requestTimeout);
+      } else {
+        response = await client
+            .get(
+              uri,
+              headers: requestHeaders,
+            )
+            .timeout(requestTimeout);
+      }
+    } catch (e) {
+      throw Exception(
+        'Gagal menghubungi ThingsBoard: $e',
+      );
     }
 
     if (response.statusCode < 200 ||
         response.statusCode >= 300) {
       throw Exception(
-        'ThingsBoard HTTP ${response.statusCode}: ${response.body}',
+        'ThingsBoard HTTP ${response.statusCode}: '
+        '${response.body}',
       );
     }
 
@@ -120,66 +117,21 @@ class ApiService {
     return decoded;
   }
 
-  static Future<ThingsBoardSession> loginAndFindDevice({
+  // ==========================================================
+  // LOGIN + FIND DEVICE
+  // ==========================================================
+
+  static Future<ThingsBoardSession>
+      loginAndFindDevice({
     required String username,
     required String password,
     String expectedDeviceName = 'Sensor C1',
   }) async {
     final client = http.Client();
 
-    Future<Map<String, dynamic>> request(
-      String method,
-      Uri uri, {
-      String? body,
-      String? bearer,
-    }) async {
-      final headers = <String, String>{
-        'Accept': 'application/json',
-      };
-
-      if (body != null) {
-        headers['Content-Type'] = 'application/json';
-      }
-
-      if (bearer != null) {
-        headers['X-Authorization'] = 'Bearer $bearer';
-      }
-
-      late http.Response response;
-
-      if (method == 'POST') {
-        response = await client.post(
-          uri,
-          headers: headers,
-          body: body,
-        ).timeout(const Duration(seconds: 12));
-      } else {
-        response = await client.get(
-          uri,
-          headers: headers,
-        ).timeout(const Duration(seconds: 12));
-      }
-
-      if (response.statusCode < 200 ||
-          response.statusCode >= 300) {
-        throw Exception(
-          'ThingsBoard HTTP ${response.statusCode}: ${response.body}',
-        );
-      }
-
-      final decoded = jsonDecode(response.body);
-
-      if (decoded is! Map<String, dynamic>) {
-        throw const FormatException(
-          'Respons ThingsBoard tidak valid.',
-        );
-      }
-
-      return decoded;
-    }
-
     try {
-      final login = await request(
+      final login = await _requestJson(
+        client,
         'POST',
         _url('/api/auth/login'),
         body: jsonEncode({
@@ -188,21 +140,23 @@ class ApiService {
         }),
       );
 
-      final token = login['token']?.toString();
+      final jwt = login['token']?.toString();
 
-      if (token == null || token.isEmpty) {
+      if (jwt == null || jwt.isEmpty) {
         throw const FormatException(
-          'JWT tidak ditemukan.',
+          'JWT tidak ditemukan pada respons login.',
         );
       }
 
-      final user = await request(
+      final user = await _requestJson(
+        client,
         'GET',
         _url('/api/auth/user'),
-        bearer: token,
+        bearer: jwt,
       );
 
       final customer = user['customer'];
+
       final customerId = customer is Map
           ? customer['id']
           : user['customerId'];
@@ -215,11 +169,13 @@ class ApiService {
           customerUuid.isEmpty ||
           customerUuid == 'null') {
         throw Exception(
-          'Customer ID tidak ditemukan.',
+          'Customer ID tidak ditemukan. '
+          'Pastikan akun memiliki akses ke device.',
         );
       }
 
-      final devices = await request(
+      final devices = await _requestJson(
+        client,
         'GET',
         _url(
           '/api/customer/$customerUuid/devices',
@@ -228,77 +184,67 @@ class ApiService {
             'page': '0',
           },
         ),
-        bearer: token,
+        bearer: jwt,
       );
 
       final data = devices['data'];
 
       if (data is! List) {
         throw const FormatException(
-          'Daftar perangkat ThingsBoard tidak valid.',
+          'Daftar device ThingsBoard tidak valid.',
         );
       }
 
       for (final item in data) {
         if (item is! Map) continue;
 
-        if (item['name']?.toString() != expectedDeviceName) {
-          continue;
-        }
+        if (item['name']?.toString() ==
+            expectedDeviceName) {
+          final id = item['id'];
 
-        final id = item['id'];
-        final uuid = id is Map
-            ? id['id']?.toString()
-            : null;
+          final uuid = id is Map
+              ? id['id']?.toString()
+              : null;
 
-        if (uuid != null && uuid.isNotEmpty) {
-          return ThingsBoardSession(
-            jwt: token,
-            deviceId: uuid,
-            deviceName: expectedDeviceName,
-          );
+          if (uuid != null && uuid.isNotEmpty) {
+            return ThingsBoardSession(
+              jwt: jwt,
+              deviceId: uuid,
+              deviceName: expectedDeviceName,
+            );
+          }
         }
       }
 
       throw Exception(
-        'Device $expectedDeviceName tidak ditemukan pada akun Customer.',
+        'Device "$expectedDeviceName" tidak ditemukan.',
       );
     } finally {
       client.close();
     }
   }
 
-  // ============================================================
-  // FETCH ALL TELEMETRY - SATU REQUEST UNTUK SEMUA SENSOR
-  // ============================================================
+  // ==========================================================
+  // LATEST TELEMETRY
+  // ==========================================================
 
-  Future<Map<String, dynamic>> fetchAllTelemetry() {
-    if (_telemetryRequest != null) {
-      return _telemetryRequest!;
-    }
-
-    final request = _requestJson(
+  Future<Map<String, dynamic>> _latest(
+    List<String> keys,
+  ) async {
+    return _requestJson(
+      _client,
       'GET',
       _url(
-        '/api/plugins/telemetry/DEVICE/$deviceId/values/timeseries',
+        '/api/plugins/telemetry/DEVICE/'
+        '$deviceId/values/timeseries',
         {
-          'keys': telemetryKeys.join(','),
+          'keys': keys.join(','),
           'limit': '1',
         },
       ),
       bearer: jwt,
     );
-
-    _telemetryRequest = request;
-
-    return request.whenComplete(() {
-      _telemetryRequest = null;
-    });
   }
-
-  // ============================================================
-  // PARSING TELEMETRY
-  // ============================================================
 
   (double, DateTime)? _point(
     Map<String, dynamic> json,
@@ -315,98 +261,74 @@ class ApiService {
     final point = values.first as Map;
 
     final value = double.tryParse(
-      point['value']?.toString() ?? '',
+      point['value'].toString(),
     );
 
     final ts = int.tryParse(
-      point['ts']?.toString() ?? '',
+      point['ts'].toString(),
     );
 
-    if (value == null || ts == null) return null;
-
-    return (
-      value,
-      DateTime.fromMillisecondsSinceEpoch(ts).toLocal(),
-    );
-  }
-
-  (bool, DateTime)? _boolPoint(
-    Map<String, dynamic> json,
-    String key,
-  ) {
-    final values = json[key];
-
-    if (values is! List ||
-        values.isEmpty ||
-        values.first is! Map) {
+    if (value == null || ts == null) {
       return null;
     }
 
-    final point = values.first as Map;
-
-    final raw = point['value']
-        ?.toString()
-        .trim()
-        .toLowerCase();
-
-    final ts = int.tryParse(
-      point['ts']?.toString() ?? '',
-    );
-
-    if (raw == null || ts == null) return null;
-
-    bool? value;
-
-    if (raw == 'true' || raw == '1') {
-      value = true;
-    } else if (raw == 'false' || raw == '0') {
-      value = false;
-    }
-
-    if (value == null) return null;
-
     return (
       value,
-      DateTime.fromMillisecondsSinceEpoch(ts).toLocal(),
+      DateTime.fromMillisecondsSinceEpoch(ts)
+          .toLocal(),
     );
   }
 
-  // ============================================================
-  // DHT11
-  // ============================================================
+  // ==========================================================
+  // DHT
+  // ==========================================================
 
   Future<DhtReading> fetchLatestDht([
     String ignored = '',
   ]) async {
-    final json = await fetchAllTelemetry();
+    final json = await _latest([
+      'temperature',
+      'humidity',
+    ]);
 
-    final temperature = _point(json, 'temperature');
-    final humidity = _point(json, 'humidity');
+    final temperature =
+        _point(json, 'temperature');
 
-    if (temperature == null || humidity == null) {
+    final humidity =
+        _point(json, 'humidity');
+
+    if (temperature == null ||
+        humidity == null) {
       throw const FormatException(
-        'Telemetry DHT belum lengkap.',
+        'Telemetry temperature/humidity belum tersedia.',
       );
     }
+
+    final timestamp =
+        temperature.$2.isAfter(humidity.$2)
+            ? temperature.$2
+            : humidity.$2;
 
     return DhtReading(
       temperature: temperature.$1,
       humidity: humidity.$1,
-      timestamp: temperature.$2.isAfter(humidity.$2)
-          ? temperature.$2
-          : humidity.$2,
+      timestamp: timestamp,
     );
   }
 
-  // ============================================================
-  // SOIL MOISTURE
-  // ============================================================
+  // ==========================================================
+  // SOIL
+  // ==========================================================
 
   Future<SoilReading> fetchLatestSoil([
     String ignored = '',
   ]) async {
-    final json = await fetchAllTelemetry();
-    final point = _point(json, 'soil_moisture');
+    final json = await _latest([
+      'soil_moisture',
+    ]);
+
+    final point =
+        _point(json, 'soil_moisture');
 
     if (point == null) {
       throw const FormatException(
@@ -421,17 +343,24 @@ class ApiService {
     );
   }
 
-  // ============================================================
-  // WATER LEVEL
-  // ============================================================
+  // ==========================================================
+  // TANK
+  // ==========================================================
 
-  Future<TankLevelReading> fetchLatestTankLevel([
+  Future<TankLevelReading>
+      fetchLatestTankLevel([
     String ignored = '',
   ]) async {
-    final json = await fetchAllTelemetry();
+    final json = await _latest([
+      'water_level_distance_cm',
+      'water_level_percent',
+    ]);
 
-    final percent = _point(json, 'water_level_percent');
-    final distance = _point(json, 'water_level_distance_cm');
+    final percent =
+        _point(json, 'water_level_percent');
+
+    final distance =
+        _point(json, 'water_level_distance_cm');
 
     if (percent == null && distance == null) {
       throw const FormatException(
@@ -439,111 +368,463 @@ class ApiService {
       );
     }
 
-    final timestamps = [
-      if (percent != null) percent.$2,
-      if (distance != null) distance.$2,
-    ]..sort((a, b) => b.compareTo(a));
-
     return TankLevelReading(
       value: percent?.$1 ?? distance!.$1,
       unit: percent != null ? '%' : 'cm',
       distanceCm: distance?.$1 ?? 0,
       hasDistanceCm: distance != null,
-      timestamp: timestamps.first,
+      timestamp: percent?.$2 ?? distance!.$2,
     );
   }
 
-  // ============================================================
-  // RAIN SENSOR
-  // ============================================================
+  // ==========================================================
+  // RAIN
+  // ==========================================================
 
   Future<RainSensorReading> fetchLatestRain([
     String ignored = '',
   ]) async {
-    final json = await fetchAllTelemetry();
+    final json = await _latest([
+      'rain_percent',
+      'is_raining',
+    ]);
 
-    final percent = _point(json, 'rain_percent');
-    final status = _boolPoint(json, 'is_raining');
+    final rainPercent =
+        _point(json, 'rain_percent');
 
-    if (percent == null && status == null) {
+    final rainStatus =
+        _point(json, 'is_raining');
+
+    if (rainPercent == null &&
+        rainStatus == null) {
       throw const FormatException(
         'Telemetry hujan belum tersedia.',
       );
     }
 
-    final timestamps = [
-      if (percent != null) percent.$2,
-      if (status != null) status.$2,
-    ]..sort((a, b) => b.compareTo(a));
-
     return RainSensorReading(
-      value: percent?.$1 ?? 0,
-      unit: '%',
-      isRaining: status?.$1 ?? false,
-      hasRainStatus: status != null,
-      timestamp: timestamps.first,
+      value: rainPercent?.$1 ??
+          rainStatus!.$1,
+      unit: rainPercent != null
+          ? '%'
+          : 'boolean',
+      isRaining:
+          (rainStatus?.$1 ?? 0) != 0,
+      hasRainStatus:
+          rainStatus != null,
+      timestamp:
+          rainPercent?.$2 ?? rainStatus!.$2,
     );
   }
 
-  // ============================================================
-  // FLOW SENSOR
-  // ============================================================
+  // ==========================================================
+  // FLOW
+  // ==========================================================
 
-  Future<WaterFlowSession> fetchLatestWaterFlow([
+  Future<WaterFlowSession>
+      fetchLatestWaterFlow([
     String ignored = '',
   ]) async {
-    final json = await fetchAllTelemetry();
+    final json = await _latest([
+      'flow_rate',
+      'total_water_liters',
+    ]);
 
-    final rate = _point(json, 'flow_rate');
-    final total = _point(json, 'total_water_liters');
-    final consumption = _point(json, 'water_consumption_m3');
-    final cost = _point(json, 'water_cost_rupiah');
-    final tariff = _point(json, 'water_tariff_rupiah_per_m3');
+    final rate =
+        _point(json, 'flow_rate');
 
-    if (rate == null &&
-        total == null &&
-        consumption == null &&
-        cost == null &&
-        tariff == null) {
+    final total =
+        _point(json, 'total_water_liters');
+
+    if (rate == null && total == null) {
       throw const FormatException(
-        'Telemetry flow sensor belum tersedia.',
+        'Telemetry debit air belum tersedia.',
       );
     }
-
-    final timestamps = [
-      if (rate != null) rate.$2,
-      if (total != null) total.$2,
-      if (consumption != null) consumption.$2,
-      if (cost != null) cost.$2,
-      if (tariff != null) tariff.$2,
-    ]..sort((a, b) => b.compareTo(a));
 
     return WaterFlowSession(
       id: deviceId,
       value: rate?.$1 ?? 0,
       unit: 'L/min',
-      totalVolumeLiters: total?.$1 ?? 0,
-      hasTotalVolume: total != null,
-      consumptionM3: consumption?.$1 ?? 0,
-      hasConsumptionM3: consumption != null,
-      costIdr: cost?.$1 ?? 0,
-      hasCost: cost != null,
-      tariffPerM3: tariff?.$1 ?? 0,
-      hasTariff: tariff != null,
-      timestamp: timestamps.first,
+      totalVolumeLiters:
+          total?.$1 ?? 0,
+      hasTotalVolume:
+          total != null,
+      timestamp:
+          rate?.$2 ?? total!.$2,
     );
   }
 
-  // ============================================================
+  // ==========================================================
+  // HISTORICAL TELEMETRY
+  // ==========================================================
+
+  Future<Map<String, List<Map<String, dynamic>>>>
+      fetchHistoricalTelemetry({
+    required DateTime start,
+    required DateTime end,
+    required List<String> keys,
+  }) async {
+    final startTs =
+        start.millisecondsSinceEpoch;
+
+    final endTs =
+        end.millisecondsSinceEpoch;
+
+    final result = await _requestJson(
+      _client,
+      'GET',
+      _url(
+        '/api/plugins/telemetry/DEVICE/'
+        '$deviceId/values/timeseries',
+        {
+          'keys': keys.join(','),
+          'startTs': startTs.toString(),
+          'endTs': endTs.toString(),
+          'limit': '10000',
+          'orderBy': 'ASC',
+        },
+      ),
+      bearer: jwt,
+    );
+
+    final parsed =
+        <String, List<Map<String, dynamic>>>{};
+
+    for (final key in keys) {
+      final raw = result[key];
+
+      if (raw is List) {
+        parsed[key] = raw
+            .whereType<Map>()
+            .map(
+              (item) => Map<String, dynamic>.from(
+                item,
+              ),
+            )
+            .toList();
+      } else {
+        parsed[key] = [];
+      }
+    }
+
+    return parsed;
+  }
+
+  // ==========================================================
   // DAILY RECAP
-  // ============================================================
+  // ==========================================================
 
-  Future<List<DailyRecapRecord>> fetchDailyRecaps() async {
-    throw UnsupportedError(
-      'Rekap harian belum diimplementasikan. '
-      'Data historis ThingsBoard perlu diambil dan diagregasi.',
+  Future<DailyRecapRecord>
+      fetchDailyRecapForDate(
+    DateTime selectedDate,
+  ) async {
+    final date = DateTime(
+      selectedDate.year,
+      selectedDate.month,
+      selectedDate.day,
+    );
+
+    final start = date;
+
+    final end = DateTime(
+      date.year,
+      date.month,
+      date.day + 1,
+    );
+
+    final keys = [
+      'temperature',
+      'humidity',
+      'soil_moisture',
+      'water_level_percent',
+      'rain_percent',
+      'is_raining',
+      'flow_rate',
+      'total_water_liters',
+      'water_consumption_m3',
+      'water_cost_rupiah',
+    ];
+
+    final historical =
+        await fetchHistoricalTelemetry(
+      start: start,
+      end: end,
+      keys: keys,
+    );
+
+    // --------------------------------------------------------
+    // PARSING
+    // --------------------------------------------------------
+
+    List<double> values(String key) {
+      return historical[key]!
+          .map((item) {
+            return double.tryParse(
+              item['value'].toString(),
+            );
+          })
+          .whereType<double>()
+          .where((value) => value.isFinite)
+          .toList();
+    }
+
+    double average(List<double> list) {
+      if (list.isEmpty) return 0;
+
+      return list.reduce((a, b) => a + b) /
+          list.length;
+    }
+
+    double? minimum(List<double> list) {
+      if (list.isEmpty) return null;
+
+      return list.reduce(
+        (a, b) => a < b ? a : b,
+      );
+    }
+
+    double? maximum(List<double> list) {
+      if (list.isEmpty) return null;
+
+      return list.reduce(
+        (a, b) => a > b ? a : b,
+      );
+    }
+
+    final temperatures =
+        values('temperature');
+
+    final humidities =
+        values('humidity');
+
+    final soils =
+        values('soil_moisture');
+
+    final tanks =
+        values('water_level_percent');
+
+    final rains =
+        values('is_raining');
+
+    final rainPercent =
+        values('rain_percent');
+
+    final flowRates =
+        values('flow_rate');
+
+    final totalWater =
+        values('total_water_liters');
+
+    final waterConsumption =
+        values('water_consumption_m3');
+
+    final waterCost =
+        values('water_cost_rupiah');
+
+    // --------------------------------------------------------
+    // DOMINANT RAIN STATUS
+    // --------------------------------------------------------
+
+    String rainStatus;
+
+    if (rains.isNotEmpty) {
+      final rainingCount = rains
+          .where((value) => value != 0)
+          .length;
+
+      rainStatus = rainingCount >=
+              (rains.length / 2)
+          ? 'Hujan'
+          : 'Tidak Hujan';
+    } else if (rainPercent.isNotEmpty) {
+      rainStatus =
+          'Data sensor hujan tersedia';
+    } else {
+      rainStatus = 'Tidak tersedia';
+    }
+
+    // --------------------------------------------------------
+    // WATER USAGE
+    // --------------------------------------------------------
+
+    double totalVolume = 0;
+    bool hasVolume = false;
+
+    if (totalWater.length >= 2) {
+      final first = totalWater.first;
+      final last = totalWater.last;
+
+      // Telemetry total diasumsikan cumulative counter.
+      // Jika counter reset, jangan hasilkan nilai negatif.
+      final delta = last - first;
+
+      if (delta >= 0) {
+        totalVolume = delta;
+        hasVolume = true;
+      }
+    } else if (waterConsumption.isNotEmpty) {
+      // Jika telemetry berupa m3.
+      totalVolume =
+          waterConsumption.last * 1000;
+
+      hasVolume = true;
+    }
+
+    double totalCost = 0;
+    bool hasCost = false;
+
+    if (waterCost.length >= 2) {
+      final delta =
+          waterCost.last - waterCost.first;
+
+      if (delta >= 0) {
+        totalCost = delta;
+        hasCost = true;
+      }
+    } else if (waterCost.length == 1) {
+      totalCost = waterCost.first;
+      hasCost = true;
+    }
+
+    double flowAverage =
+        average(flowRates);
+
+    final flowSession =
+        flowRates.isEmpty &&
+                !hasVolume &&
+                !hasCost
+            ? null
+            : WaterFlowSession(
+                id: deviceId,
+                value: flowAverage,
+                unit: 'L/min',
+                totalVolumeLiters:
+                    totalVolume,
+                costIdr: totalCost,
+                hasTotalVolume:
+                    hasVolume,
+                hasCost:
+                    hasCost,
+                timestamp: date,
+              );
+
+    // --------------------------------------------------------
+    // TOTAL DATA POINTS
+    // --------------------------------------------------------
+
+    final totalDataPoints = [
+      temperatures.length,
+      humidities.length,
+      soils.length,
+      tanks.length,
+      rains.length,
+      rainPercent.length,
+      flowRates.length,
+      totalWater.length,
+    ].fold<int>(
+      0,
+      (sum, count) => sum + count,
+    );
+
+    // --------------------------------------------------------
+    // CREATE RECORD
+    // --------------------------------------------------------
+
+    return DailyRecapRecord(
+      date:
+          '${date.year}-'
+          '${date.month.toString().padLeft(2, '0')}-'
+          '${date.day.toString().padLeft(2, '0')}',
+
+      avgTemperature:
+          average(temperatures),
+
+      avgHumidity:
+          average(humidities),
+
+      avgSoilMoisture:
+          average(soils),
+
+      avgTankLevel:
+          average(tanks),
+
+      dominantRainStatus:
+          rainStatus,
+
+      flowSession:
+          flowSession,
+
+      totalDataPoints:
+          totalDataPoints,
+
+      temperatureDataPoints:
+          temperatures.length,
+
+      humidityDataPoints:
+          humidities.length,
+
+      soilDataPoints:
+          soils.length,
+
+      tankDataPoints:
+          tanks.length,
+
+      minTemperature:
+          minimum(temperatures),
+
+      maxTemperature:
+          maximum(temperatures),
+
+      minHumidity:
+          minimum(humidities),
+
+      maxHumidity:
+          maximum(humidities),
+
+      minSoilMoisture:
+          minimum(soils),
+
+      maxSoilMoisture:
+          maximum(soils),
+
+      minTankLevel:
+          minimum(tanks),
+
+      maxTankLevel:
+          maximum(tanks),
+
+      hasTemperature:
+          temperatures.isNotEmpty,
+
+      hasHumidity:
+          humidities.isNotEmpty,
+
+      hasSoilMoisture:
+          soils.isNotEmpty,
+
+      hasTankLevel:
+          tanks.isNotEmpty,
     );
   }
+
+  // ==========================================================
+  // DAILY RECAP LIST
+  // ==========================================================
+
+  Future<List<DailyRecapRecord>>
+      fetchDailyRecaps() async {
+    final today = DateTime.now();
+
+    final recap =
+        await fetchDailyRecapForDate(today);
+
+    return [recap];
+  }
+
+  // ==========================================================
+  // DISPOSE
+  // ==========================================================
 
   void dispose() {
     _client.close();

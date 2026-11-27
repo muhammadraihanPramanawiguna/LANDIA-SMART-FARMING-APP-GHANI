@@ -1,4 +1,10 @@
 
+import 'package:flutter/foundation.dart';
+
+// ============================================================
+// IRRIGATION TRIGGER ENUM
+// ============================================================
+
 enum IrrigationTrigger {
   automatic,
   manual,
@@ -8,20 +14,14 @@ enum IrrigationTrigger {
 // JSON PARSING HELPERS
 // ============================================================
 
-/// Mengambil angka desimal dari JSON.
+/// Parsing angka desimal.
 ///
 /// Mendukung:
 /// - int
 /// - double
-/// - String angka
+/// - String numeric
 ///
-/// Menolak:
-/// - null
-/// - String tidak valid
-/// - NaN
-/// - Infinity
-///
-/// Jika tidak valid, menggunakan defaultValue.
+/// Nilai invalid akan menggunakan defaultValue.
 double _parseDouble(
   dynamic value, {
   double defaultValue = 0.0,
@@ -41,22 +41,22 @@ double _parseDouble(
   return result;
 }
 
-/// Mengambil angka integer dari JSON.
+/// Parsing integer.
 ///
-/// Mendukung:
-/// - int
-/// - double
-/// - String angka
+/// Berbeda dengan kode sebelumnya, helper ini tidak langsung
+/// mengubah 10.5 menjadi 10 tanpa validasi.
 ///
-/// Contoh:
-/// 10.0 -> 10
-/// "10" -> 10
-/// "10.5" -> 10
+/// Jika nilai desimal bukan bilangan bulat, akan menggunakan
+/// defaultValue.
 int _parseInt(
   dynamic value, {
   int defaultValue = 0,
 }) {
   num? result;
+
+  if (value is int) {
+    return value;
+  }
 
   if (value is num) {
     result = value;
@@ -68,22 +68,32 @@ int _parseInt(
     return defaultValue;
   }
 
+  if (result % 1 != 0) {
+    return defaultValue;
+  }
+
   return result.toInt();
 }
 
-/// Mengambil timestamp dari beberapa kemungkinan nama field.
+/// Parsing timestamp.
 ///
 /// Field yang didukung:
 /// - timestamp
 /// - recordedAt
 /// - createdAt
+/// - date
 ///
-/// Tidak membuat timestamp palsu jika semua field tidak tersedia.
+/// Format yang didukung:
+/// - DateTime
+/// - ISO 8601 String
+/// - Unix timestamp dalam detik
+/// - Unix timestamp dalam milidetik
 DateTime _parseTimestamp(Map<String, dynamic> json) {
   final candidates = [
     json['timestamp'],
     json['recordedAt'],
     json['createdAt'],
+    json['date'],
   ];
 
   for (final candidate in candidates) {
@@ -91,11 +101,61 @@ DateTime _parseTimestamp(Map<String, dynamic> json) {
       return candidate.toLocal();
     }
 
-    if (candidate is String && candidate.trim().isNotEmpty) {
-      final parsed = DateTime.tryParse(candidate.trim());
+    // --------------------------------------------------------
+    // Unix Timestamp
+    // --------------------------------------------------------
 
-      if (parsed != null) {
-        return parsed.toLocal();
+    if (candidate is num) {
+      final value = candidate.toInt();
+
+      // Timestamp 10 digit biasanya detik.
+      // Timestamp 13 digit biasanya milidetik.
+      final milliseconds = value.abs() < 100000000000
+          ? value * 1000
+          : value;
+
+      try {
+        return DateTime.fromMillisecondsSinceEpoch(
+          milliseconds,
+          isUtc: true,
+        ).toLocal();
+      } catch (_) {
+        continue;
+      }
+    }
+
+    // --------------------------------------------------------
+    // String Timestamp
+    // --------------------------------------------------------
+
+    if (candidate is String && candidate.trim().isNotEmpty) {
+      final normalized = candidate.trim();
+
+      // Coba ISO 8601 terlebih dahulu.
+      final parsedDate = DateTime.tryParse(normalized);
+
+      if (parsedDate != null) {
+        return parsedDate.toLocal();
+      }
+
+      // Coba numeric timestamp dari String.
+      final parsedNumber = num.tryParse(normalized);
+
+      if (parsedNumber != null && parsedNumber.isFinite) {
+        final value = parsedNumber.toInt();
+
+        final milliseconds = value.abs() < 100000000000
+            ? value * 1000
+            : value;
+
+        try {
+          return DateTime.fromMillisecondsSinceEpoch(
+            milliseconds,
+            isUtc: true,
+          ).toLocal();
+        } catch (_) {
+          continue;
+        }
       }
     }
   }
@@ -105,13 +165,13 @@ DateTime _parseTimestamp(Map<String, dynamic> json) {
   );
 }
 
-/// Mengambil ID dari JSON.
+/// Parsing ID.
 ///
-/// ID tidak boleh null atau kosong.
+/// ID wajib tersedia dan tidak boleh kosong.
 String _parseId(dynamic value) {
   if (value == null) {
     throw const FormatException(
-      'ID riwayat tidak tersedia.',
+      'ID history tidak tersedia.',
     );
   }
 
@@ -119,16 +179,14 @@ String _parseId(dynamic value) {
 
   if (id.isEmpty) {
     throw const FormatException(
-      'ID riwayat tidak boleh kosong.',
+      'ID history tidak boleh kosong.',
     );
   }
 
   return id;
 }
 
-/// Mengambil angka desimal yang wajib bernilai >= 0.
-///
-/// Nilai negatif atau tidak valid akan menghasilkan error.
+/// Parsing angka non-negatif.
 double _parseNonNegativeDouble(
   dynamic value, {
   String fieldName = 'Nilai',
@@ -147,7 +205,7 @@ double _parseNonNegativeDouble(
   return parsed;
 }
 
-/// Mengambil angka integer yang wajib bernilai >= 0.
+/// Parsing integer non-negatif.
 int _parseNonNegativeInt(
   dynamic value, {
   String fieldName = 'Nilai',
@@ -166,14 +224,14 @@ int _parseNonNegativeInt(
   return parsed;
 }
 
-/// Parsing trigger irigasi dengan validasi ketat.
+/// Parsing trigger irigasi.
 ///
 /// Nilai yang didukung:
 /// - automatic
 /// - auto
 /// - manual
 ///
-/// Nilai yang tidak dikenal tidak otomatis dianggap manual.
+/// Tidak dikenal akan menghasilkan FormatException.
 IrrigationTrigger _parseTrigger(dynamic value) {
   if (value == null) {
     throw const FormatException(
@@ -181,14 +239,19 @@ IrrigationTrigger _parseTrigger(dynamic value) {
     );
   }
 
-  final normalized = value.toString().trim().toLowerCase();
+  final normalized = value
+      .toString()
+      .trim()
+      .toLowerCase();
 
   switch (normalized) {
     case 'automatic':
     case 'auto':
+    case 'otomatis':
       return IrrigationTrigger.automatic;
 
     case 'manual':
+    case 'manual control':
       return IrrigationTrigger.manual;
 
     default:
@@ -198,24 +261,38 @@ IrrigationTrigger _parseTrigger(dynamic value) {
   }
 }
 
+/// Mengubah enum menjadi String untuk JSON.
+String _triggerToJson(IrrigationTrigger trigger) {
+  switch (trigger) {
+    case IrrigationTrigger.automatic:
+      return 'automatic';
+
+    case IrrigationTrigger.manual:
+      return 'manual';
+  }
+}
+
 // ============================================================
 // RAIN EVENT
 // ============================================================
 
+@immutable
 class RainEvent {
   final String id;
   final DateTime timestamp;
   final int durationMinutes;
   final double rainfallMm;
 
-  RainEvent({
+  const RainEvent({
     required this.id,
     required this.timestamp,
     required this.durationMinutes,
     required this.rainfallMm,
   });
 
-  factory RainEvent.fromJson(Map<String, dynamic> json) {
+  factory RainEvent.fromJson(
+    Map<String, dynamic> json,
+  ) {
     return RainEvent(
       id: _parseId(json['id']),
       timestamp: _parseTimestamp(json),
@@ -229,26 +306,38 @@ class RainEvent {
       ),
     );
   }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'timestamp': timestamp.toIso8601String(),
+      'durationMinutes': durationMinutes,
+      'rainfallMm': rainfallMm,
+    };
+  }
 }
 
 // ============================================================
 // FERTILIZER EVENT
 // ============================================================
 
+@immutable
 class FertilizerEvent {
   final String id;
   final DateTime timestamp;
   final int volumeMl;
   final int durationMinutes;
 
-  FertilizerEvent({
+  const FertilizerEvent({
     required this.id,
     required this.timestamp,
     required this.volumeMl,
     required this.durationMinutes,
   });
 
-  factory FertilizerEvent.fromJson(Map<String, dynamic> json) {
+  factory FertilizerEvent.fromJson(
+    Map<String, dynamic> json,
+  ) {
     return FertilizerEvent(
       id: _parseId(json['id']),
       timestamp: _parseTimestamp(json),
@@ -273,12 +362,22 @@ class FertilizerEvent {
 
     return '$volumeMl mL';
   }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'timestamp': timestamp.toIso8601String(),
+      'volumeMl': volumeMl,
+      'durationMinutes': durationMinutes,
+    };
+  }
 }
 
 // ============================================================
 // IRRIGATION LOG EVENT
 // ============================================================
 
+@immutable
 class IrrigationLogEvent {
   final String id;
   final DateTime timestamp;
@@ -286,7 +385,7 @@ class IrrigationLogEvent {
   final double volumeLiters;
   final IrrigationTrigger trigger;
 
-  IrrigationLogEvent({
+  const IrrigationLogEvent({
     required this.id,
     required this.timestamp,
     required this.durationMinutes,
@@ -310,5 +409,26 @@ class IrrigationLogEvent {
       ),
       trigger: _parseTrigger(json['trigger']),
     );
+  }
+
+  /// Label untuk ditampilkan di UI.
+  String get triggerLabel {
+    switch (trigger) {
+      case IrrigationTrigger.automatic:
+        return 'Otomatis';
+
+      case IrrigationTrigger.manual:
+        return 'Manual';
+    }
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'timestamp': timestamp.toIso8601String(),
+      'durationMinutes': durationMinutes,
+      'volumeLiters': volumeLiters,
+      'trigger': _triggerToJson(trigger),
+    };
   }
 }
