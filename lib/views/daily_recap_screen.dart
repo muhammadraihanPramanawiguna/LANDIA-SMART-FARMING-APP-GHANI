@@ -162,7 +162,7 @@ class _DailyRecapScreenState
       backgroundColor: backgroundColor,
       appBar: AppBar(
         title: const Text(
-          'Rekapan Laporan Harian',
+          'Laporan Harian',
           style: TextStyle(
             fontWeight: FontWeight.bold,
           ),
@@ -203,35 +203,37 @@ class _DailyRecapScreenState
       onRefresh: _loadRecap,
       color: lightGreen,
       child: ListView(
-        padding: const EdgeInsets.all(16),
         children: [
-          _buildDateCard(),
-
-          const SizedBox(height: 16),
-
-          _buildSummaryCard(),
-
-          const SizedBox(height: 16),
-
-          _buildSensorSection(),
-
-          const SizedBox(height: 16),
-
-          _buildRainCard(),
-
-          const SizedBox(height: 16),
-
-          _buildWaterSection(),
-
-          const SizedBox(height: 16),
-
-          _buildDataInformation(),
-
-          const SizedBox(height: 20),
-
-          _buildExportButton(),
-
-          const SizedBox(height: 30),
+          Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1100),
+              child: Padding(
+                padding: EdgeInsets.symmetric(
+                  horizontal: MediaQuery.sizeOf(context).width < 600 ? 12 : 24,
+                  vertical: 16,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _buildDateCard(),
+                    const SizedBox(height: 16),
+                    _buildSummaryCard(),
+                    const SizedBox(height: 16),
+                    _buildSensorSection(),
+                    const SizedBox(height: 16),
+                    _buildRainCard(),
+                    const SizedBox(height: 16),
+                    _buildWaterSection(),
+                    const SizedBox(height: 16),
+                    _buildDataInformation(),
+                    const SizedBox(height: 20),
+                    _buildExportButton(),
+                    const SizedBox(height: 30),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -326,7 +328,7 @@ class _DailyRecapScreenState
               CrossAxisAlignment.start,
           children: [
             const Text(
-              'Ringkasan Harian',
+              'Ringkasan Kondisi Pertanian',
               style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.bold,
@@ -456,9 +458,34 @@ class _DailyRecapScreenState
     final record = _record!;
 
     return _sectionCard(
-      title: 'Statistik Sensor',
+      title: 'Statistik Kondisi Sensor',
       icon: Icons.analytics,
       children: [
+        if (!record.hasTemperature || !record.hasHumidity)
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.orange.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.orange.withValues(alpha: 0.35)),
+            ),
+            child: const Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.info_outline, color: Colors.orange),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Data suhu atau kelembapan udara tidak tersedia pada tanggal ini. '
+                    'Nilai tidak dihitung agar laporan tidak menampilkan angka yang keliru.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+          ),
         if (record.hasTemperature)
           _statRow(
             'Suhu udara',
@@ -533,33 +560,29 @@ class _DailyRecapScreenState
 
           const SizedBox(height: 8),
 
-          Row(
-            children: [
-              Expanded(
-                child: _smallMetric(
-                  'Rata-rata',
-                  '${average.toStringAsFixed(1)} $unit',
-                ),
-              ),
-
-              Expanded(
-                child: _smallMetric(
-                  'Minimum',
-                  minimum == null
-                      ? '--'
-                      : '${minimum.toStringAsFixed(1)} $unit',
-                ),
-              ),
-
-              Expanded(
-                child: _smallMetric(
-                  'Maksimum',
-                  maximum == null
-                      ? '--'
-                      : '${maximum.toStringAsFixed(1)} $unit',
-                ),
-              ),
-            ],
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final metrics = <Widget>[
+                _smallMetric('Rata-rata', '${average.toStringAsFixed(1)} $unit'),
+                _smallMetric('Terendah', minimum == null ? '--' : '${minimum.toStringAsFixed(1)} $unit'),
+                _smallMetric('Tertinggi', maximum == null ? '--' : '${maximum.toStringAsFixed(1)} $unit'),
+              ];
+              if (constraints.maxWidth < 480) {
+                return Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: metrics
+                      .map((metric) => SizedBox(
+                            width: (constraints.maxWidth - 12) / 2,
+                            child: metric,
+                          ))
+                      .toList(),
+                );
+              }
+              return Row(
+                children: metrics.map((metric) => Expanded(child: metric)).toList(),
+              );
+            },
           ),
 
           const Divider(),

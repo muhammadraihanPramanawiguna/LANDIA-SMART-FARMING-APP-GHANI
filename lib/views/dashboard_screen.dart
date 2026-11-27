@@ -443,58 +443,62 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   onRefresh: () => _fetchAllTelemetry(),
                   color: lightGreen,
                   child: ListView(
-                    physics:
-                        const AlwaysScrollableScrollPhysics(),
-                    padding: const EdgeInsets.all(16),
+                    physics: const AlwaysScrollableScrollPhysics(),
                     children: [
-                      _buildRecapBannerButton(),
-
-                      const SizedBox(height: 16),
-
-                      if (_errorMessage != null)
-                        _buildWarningBanner(),
-
-                      _buildSectionTitle(
-                        'Pemantauan Sensor Langsung',
-                      ),
-
-                      const SizedBox(height: 10),
-
-                      _buildDhtCard(),
-
-                      const SizedBox(height: 12),
-
-                      Row(
-                        crossAxisAlignment:
-                            CrossAxisAlignment.start,
-                        children: [
-                          Expanded(
-                            child: _buildSoilCard(),
+                      Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 1280),
+                          child: Padding(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: MediaQuery.sizeOf(context).width < 600 ? 12 : 24,
+                              vertical: 16,
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                _buildRecapBannerButton(),
+                                const SizedBox(height: 16),
+                                if (_errorMessage != null) _buildWarningBanner(),
+                                _buildSectionTitle('Kondisi Sensor Saat Ini'),
+                                const SizedBox(height: 10),
+                                _buildDhtCard(),
+                                const SizedBox(height: 12),
+                                LayoutBuilder(
+                                  builder: (context, constraints) {
+                                    final compact = constraints.maxWidth < 520;
+                                    if (compact) {
+                                      return Column(
+                                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                                        children: [
+                                          _buildSoilCard(),
+                                          const SizedBox(height: 12),
+                                          _buildRainCard(),
+                                        ],
+                                      );
+                                    }
+                                    return Row(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Expanded(child: _buildSoilCard()),
+                                        const SizedBox(width: 12),
+                                        Expanded(child: _buildRainCard()),
+                                      ],
+                                    );
+                                  },
+                                ),
+                                const SizedBox(height: 12),
+                                _buildTankCard(),
+                                const SizedBox(height: 18),
+                                _buildSectionTitle('Penggunaan Air'),
+                                const SizedBox(height: 10),
+                                _buildFlowCard(),
+                                const SizedBox(height: 24),
+                                _buildLastUpdateInformation(),
+                              ],
+                            ),
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: _buildRainCard(),
-                          ),
-                        ],
+                        ),
                       ),
-
-                      const SizedBox(height: 12),
-
-                      _buildTankCard(),
-
-                      const SizedBox(height: 18),
-
-                      _buildSectionTitle(
-                        'Data Aliran Air (Sensor Flow)',
-                      ),
-
-                      const SizedBox(height: 10),
-
-                      _buildFlowCard(),
-
-                      const SizedBox(height: 24),
-
-                      _buildLastUpdateInformation(),
                     ],
                   ),
                 ),

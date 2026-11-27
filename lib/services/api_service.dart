@@ -525,13 +525,11 @@ class ApiService {
       selectedDate.day,
     );
 
-    final start = date;
-
-    final end = DateTime(
-      date.year,
-      date.month,
-      date.day + 1,
-    );
+    // Gunakan batas hari lokal perangkat. DateTime local akan dikonversi
+    // menjadi epoch milliseconds untuk query ThingsBoard, sehingga tanggal
+    // laporan mengikuti timezone perangkat pengguna (mis. WIB).
+    final start = DateTime(date.year, date.month, date.day);
+    final end = DateTime(date.year, date.month, date.day + 1);
 
     final keys = [
       'temperature',
